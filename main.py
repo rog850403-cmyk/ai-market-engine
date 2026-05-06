@@ -12,6 +12,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 GEMINI_KEY     = os.getenv("GEMINI_API_KEY", "")
 GROQ_KEY       = os.getenv("GROQ_API_KEY", "")
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
+ZERNIO_KEY = os.getenv("ZERNIO_API_KEY", "")
 
 STATE = {
     "cycle": 0, "status": "running",
@@ -155,7 +156,21 @@ async def full_pipeline():
     print("生成文案...")
     copy = await generate_copy(product)
     STATE["copies"].append(copy)
-    if len(STATE["copies"]) > 10:
+    if len(STATE["copies"]) > 10:STATE["copies"] = STATE["copies"][-10:]
+        # 自動發布到 Threads
+    if ZERNIO_KEY and copy:
+        try:
+            post = copy.get("copy", "")[:280]
+            async with httpx.AsyncClient(timeout=15) as c:
+                await c.post(
+                    "https://zernio.com/api/v1/posts",
+                    headers={"Authorization": f"Bearer {ZERNIO_KEY}",
+                             "Content-Type": "application/json"},
+                    json={"text": post, "platforms": ["threads"]}
+                )
+            print("已自動發布到 Threads")
+        except Exception as e:
+            print(f"Zernio發布失敗: {e}")
         STATE["copies"] = STATE["copies"][-10:]
     
     STATE["last_run"] = datetime.now().isoformat()
