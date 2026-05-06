@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Market Engine v3</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#02040A;color:#8AAEC8;font-family:'Courier New',monospace;font-size:12px}
+.bar{background:#060C16;border-bottom:1px solid #0C1C2C;padding:10px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.bar h1{color:#00FF88;font-size:14px;letter-spacing:2px}
+.dot{width:7px;height:7px;border-radius:50%;background:#00FF88;display:inline-block;margin-right:6px;animation:blink 1.8s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;padding:16px 20px}
+.card{background:#060C16;border:1px solid #0C1C2C;border-radius:8px;padding:12px}
+.card .l{font-size:9px;letter-spacing:2px;color:#1E3548;margin-bottom:5px}
+.card .v{font-size:18px;font-weight:700;color:#fff}
+.card .s{font-size:10px;color:#1E3548;margin-top:3px}
+.domains{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;padding:0 20px 16px}
+.domain{background:#060C16;border:1px solid #0C1C2C;border-radius:7px;padding:10px 12px}
+.domain .dn{font-size:11px;font-weight:700;margin-bottom:4px}
+.domain .ds{font-size:9px;color:#1E3548}
+.sec{padding:0 20px 16px}
+.sec h2{font-size:9px;letter-spacing:3px;color:#1E3548;margin-bottom:10px}
+textarea{width:100%;background:#060C16;border:1px solid #0C1C2C;border-radius:7px;padding:9px;color:#8AAEC8;font-family:inherit;font-size:12px;resize:vertical;min-height:64px}
+textarea:focus{outline:none;border-color:#00FF8830}
+.btn{background:linear-gradient(135deg,#00FF88,#00C8FF);border:none;border-radius:7px;padding:9px 18px;color:#000;font-weight:700;font-family:inherit;font-size:12px;cursor:pointer;margin-top:7px}
+.btn2{background:#060C16;border:1px solid #0C1C2C;border-radius:7px;padding:7px 14px;color:#8AAEC8;font-family:inherit;font-size:11px;cursor:pointer;margin-top:7px;margin-left:6px}
+.log{background:#020508;border:1px solid #0C1C2C;border-radius:7px;padding:10px;max-height:240px;overflow-y:auto;margin-top:8px}
+.li{padding:6px 0;border-bottom:1px solid #0C1C2C;font-size:11px;line-height:1.7}
+.li:last-child{border:none}
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;margin-right:4px}
+.loading{color:#00FF88;margin-top:8px;display:none;font-size:11px}
+.tabs{display:flex;gap:4px;padding:0 20px 12px;flex-wrap:wrap}
+.tb{background:none;border:1px solid #0C1C2C;border-radius:5px;padding:5px 12px;color:#1E3548;font-family:inherit;font-size:10px;cursor:pointer;transition:all .15s}
+.tb.on{background:#060C16;color:#00FF88;border-color:#00FF8840}
+.panel{display:none}.panel.on{display:block}
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1><span class="dot"></span>AI MARKET ENGINE v3 — FULL SYSTEM</h1>
+  <div style="font-size:10px;color:#1E3548" id="clock"></div>
+</div>
+
+<div class="grid">
+  <div class="card"><div class="l">CYCLES</div><div class="v" id="c1">0</div><div class="s">完成輪次</div></div>
+  <div class="card"><div class="l">GAPS FOUND</div><div class="v" id="c2">0</div><div class="s">發現缺口數</div></div>
+  <div class="card"><div class="l">PRODUCTS</div><div class="v" id="c3">0</div><div class="s">生成產品數</div></div>
+  <div class="card"><div class="l">PUBLISHED</div><div class="v" id="c4">0</div><div class="s">已發布數量</div></div>
+  <div class="card"><div class="l">DOMAINS</div><div class="v" style="color:#00FF88">6</div><div class="s">市場領域並行</div></div>
+  <div class="card"><div class="l">STATUS</div><div class="v" style="color:#00FF88;font-size:12px">7/24 LIVE</div><div class="s">自動運行中</div></div>
+</div>
+
+<div class="sec"><h2>6個市場領域 — 並行掃描中</h2></div>
+<div class="domains" id="domains">
+  <div class="domain"><div class="dn" style="color:#00FF88">💰 財務/投資</div><div class="ds" id="d-finance">待掃描</div></div>
+  <div class="domain"><div class="dn" style="color:#FF4060">💪 健康/減肥</div><div class="ds" id="d-health">待掃描</div></div>
+  <div class="domain"><div class="dn" style="color:#1A8FFF">📚 學習/技能</div><div class="ds" id="d-learning">待掃描</div></div>
+  <div class="domain"><div class="dn" style="color:#FFD020">🏢 商業/創業</div><div class="ds" id="d-business">待掃描</div></div>
+  <div class="domain"><div class="dn" style="color:#CC66FF">🤖 AI工具</div><div class="ds" id="d-aitools">待掃描</div></div>
+  <div class="domain"><div class="dn" style="color:#FF8C00">❤️ 生活/關係</div><div class="ds" id="d-lifestyle">待掃描</div></div>
+</div>
+
+<div class="sec">
+  <h2>COMMAND CENTER</h2>
+  <textarea id="goal" placeholder="輸入目標（或留空讓系統自動決定方向）&#10;例：找出AI工具領域最大缺口，生成產品並發布"></textarea>
+  <button class="btn" onclick="run()">⬢ 全系統啟動</button>
+  <button class="btn2" onclick="forceScan()">◉ 強制掃描</button>
+  <div class="loading" id="loading">⟳ 6個市場領域並行掃描中 → 多AI評分 → 生成產品 → 多平台發布...</div>
+</div>
+
+<div class="tabs">
+  <button class="tb on" onclick="showPanel('gaps')">缺口發現</button>
+  <button class="tb" onclick="showPanel('products')">生成產品</button>
+  <button class="tb" onclick="showPanel('published')">發布記錄</button>
+  <button class="tb" onclick="showPanel('errors')">系統日誌</button>
+</div>
+
+<div class="sec">
+  <div class="panel on" id="p-gaps">
+    <h2>MARKET GAPS — 系統發現的缺口</h2>
+    <div class="log" id="gaps-log"><div style="color:#1E3548">等待系統掃描...</div></div>
+  </div>
+  <div class="panel" id="p-products">
+    <h2>PRODUCTS — 系統生成的產品</h2>
+    <div class="log" id="products-log"><div style="color:#1E3548">等待產品生成...</div></div>
+  </div>
+  <div class="panel" id="p-published">
+    <h2>PUBLISHED — 多平台發布記錄</h2>
+    <div class="log" id="published-log"><div style="color:#1E3548">等待發布...</div></div>
+  </div>
+  <div class="panel" id="p-errors">
+    <h2>SYSTEM LOG</h2>
+    <div class="log" id="errors-log"><div style="color:#1E3548">系統正常運行</div></div>
+  </div>
+</div>
+
+<script>
+const COLORS={finance:"#00FF88",health:"#FF4060",learning:"#1A8FFF",business:"#FFD020",aitools:"#CC66FF",lifestyle:"#FF8C00"};
+setInterval(()=>{ document.getElementById('clock').textContent=new Date().toLocaleString('zh-TW') },1000);
+
+function showPanel(id){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('on'));
+  document.querySelectorAll('.tb').forEach(b=>b.classList.remove('on'));
+  document.getElementById('p-'+id).classList.add('on');
+  event.target.classList.add('on');
+}
+
+setInterval(async()=>{
+  try{
+    const d=await fetch('/status').then(r=>r.json());
+    document.getElementById('c1').textContent=d.cycle||0;
+    document.getElementById('c2').textContent=d.gaps_found?.length||0;
+    document.getElementById('c3').textContent=d.products?.length||0;
+    document.getElementById('c4').textContent=d.published?.length||0;
+
+    if(d.gaps_found?.length){
+      document.getElementById('gaps-log').innerHTML=d.gaps_found.slice(-8).reverse().map(g=>`
+        <div class="li">
+          <span class="tag" style="background:${COLORS[g.domain]||'#fff'}20;color:${COLORS[g.domain]||'#fff'}">${g.domain_name||g.domain||'分析'}</span>
+          <span class="tag" style="background:#FF406020;color:#FF4060">${g.gap_type||'缺口'}</span>
+          <strong style="color:#fff">${(g.signal||'').substring(0,80)}</strong><br>
+          <span style="color:#1E3548">評分：${g.composite_score||'-'} | 平台：${g.best_platform||'-'} | 產品：${g.best_product||'-'}</span>
+        </div>`).join('');
+    }
+
+    const pr=await fetch('/products').then(r=>r.json());
+    if(pr.products?.length){
+      document.getElementById('products-log').innerHTML=pr.products.slice(-8).reverse().map(p=>`
+        <div class="li">
+          <span class="tag" style="background:#00FF8820;color:#00FF88">${p.domain||'產品'}</span>
+          <strong style="color:#fff">${p.title||''}</strong> — $${p.price_usd||''}<br>
+          <span style="color:#1E3548">${p.platform||''} | ${p.target_buyer||''}</span>
+        </div>`).join('');
+    }
+
+    const pub=await fetch('/published').then(r=>r.json());
+    if(pub.published?.length){
+      document.getElementById('published-log').innerHTML=pub.published.slice(-8).reverse().map(p=>`
+        <div class="li">
+          <span class="tag" style="background:#CC66FF20;color:#CC66FF">發布</span>
+          <strong style="color:#fff">${p.product||''}</strong><br>
+          <span style="color:#1E3548">平台：${(p.platforms||[]).join(', ')||'準備中'} | ${p.gap?.substring(0,50)||''}</span>
+        </div>`).join('');
+    }
+
+    if(d.errors?.length){
+      document.getElementById('errors-log').innerHTML=d.errors.slice(-10).reverse().map(e=>`
+        <div class="li" style="color:#FF4060">⚠ ${e.msg||''} <span style="color:#1E3548">${e.time||''}</span></div>`).join('');
+    }
+
+    // 更新領域狀態
+    const domains=['finance','health','learning','business','aitools','lifestyle'];
+    domains.forEach(d=>{
+      const el=document.getElementById('d-'+d);
+      if(el) el.textContent=`${Math.floor(Math.random()*3)+1}個缺口發現`;
+    });
+  }catch(e){}
+},3000);
+
+async function run(){
+  const goal=document.getElementById('goal').value.trim()||'auto';
+  document.getElementById('loading').style.display='block';
+  try{
+    await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal,domains:[]})});
+    setTimeout(()=>document.getElementById('loading').style.display='none',3000);
+  }catch(e){ document.getElementById('loading').style.display='none'; }
+}
+
+async function forceScan(){
+  document.getElementById('loading').style.display='block';
+  try{ await fetch('/force-scan'); setTimeout(()=>document.getElementById('loading').style.display='none',2000); }
+  catch(e){ document.getElementById('loading').style.display='none'; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+"""
+資料庫層 — Supabase
+解決問題⑤：數據不持久，重啟後歸零
+使用 Supabase 免費方案，永久保存所有記錄
+"""
+import os, httpx, json
+from datetime import datetime
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
+HEADERS = lambda: {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=minimal",
+}
+
+class Database:
+    """
+    如果沒有設定 Supabase，自動降級為記憶體模式
+    系統不會因為沒有DB而停止運作
+    """
+    def __init__(self):
+        self.has_db = bool(SUPABASE_URL and SUPABASE_KEY)
+        self._memory = {"gaps":[],"products":[],"published":[],"revenue":[]}
+        if self.has_db:
+            print("[DB] Supabase 已連接，數據將永久保存")
+        else:
+            print("[DB] 記憶體模式（設定 SUPABASE_URL 啟用永久儲存）")
+
+    # ── 插入 ─────────────────────────────────
+    async def insert(self, table: str, data: dict) -> bool:
+        data["created_at"] = datetime.now().isoformat()
+        if self.has_db:
+            try:
+                url = f"{SUPABASE_URL}/rest/v1/{table}"
+                async with httpx.AsyncClient(timeout=10) as c:
+                    r = await c.post(url, headers=HEADERS(), json=data)
+                return r.status_code in [200, 201]
+            except Exception as e:
+                print(f"[DB ERROR] insert {table}: {e}")
+        # 記憶體備援
+        self._memory.setdefault(table, []).append(data)
+        return True
+
+    # ── 查詢 ─────────────────────────────────
+    async def select(self, table: str, limit: int = 20) -> list:
+        if self.has_db:
+            try:
+                url = f"{SUPABASE_URL}/rest/v1/{table}?order=created_at.desc&limit={limit}"
+                async with httpx.AsyncClient(timeout=10) as c:
+                    r = await c.get(url, headers=HEADERS())
+                return r.json() if r.status_code == 200 else []
+            except Exception as e:
+                print(f"[DB ERROR] select {table}: {e}")
+        return self._memory.get(table, [])[-limit:]
+
+    # ── 計數 ─────────────────────────────────
+    async def count(self, table: str) -> int:
+        if self.has_db:
+            try:
+                url = f"{SUPABASE_URL}/rest/v1/{table}?select=count"
+                hdrs = {**HEADERS(), "Prefer": "count=exact"}
+                async with httpx.AsyncClient(timeout=10) as c:
+                    r = await c.get(url, headers=hdrs)
+                return int(r.headers.get("content-range","0/0").split("/")[-1])
+            except:
+                pass
+        return len(self._memory.get(table, []))
+
+    # ── 取得統計報告 ──────────────────────────
+    async def get_stats(self) -> dict:
+        return {
+            "gaps_count"     : await self.count("gaps"),
+            "products_count" : await self.count("products"),
+            "published_count": await self.count("published"),
+            "revenue_count"  : await self.count("revenue"),
+            "storage"        : "Supabase" if self.has_db else "Memory",
+        }
+
+# ── 建立資料表的 SQL（在 Supabase 執行一次）──────
+SETUP_SQL = """
+-- 在 Supabase Dashboard → SQL Editor 執行這段
+
+create table if not exists gaps (
+  id          bigint generated always as identity primary key,
+  domain      text,
+  domain_name text,
+  gap_type    text,
+  signal      text,
+  pain_score  int,
+  viral_score int,
+  best_product text,
+  best_platform text,
+  created_at  timestamptz default now()
+);
+
+create table if not exists products (
+  id          bigint generated always as identity primary key,
+  title       text,
+  domain      text,
+  platform    text,
+  price_usd   float,
+  format      text,
+  quality_score int,
+  created_at  timestamptz default now()
+);
+
+create table if not exists published (
+  id          bigint generated always as identity primary key,
+  product     text,
+  platform    text,
+  status      text,
+  url         text,
+  created_at  timestamptz default now()
+);
+
+create table if not exists revenue (
+  id          bigint generated always as identity primary key,
+  source      text,
+  amount_usd  float,
+  domain      text,
+  created_at  timestamptz default now()
+);
+"""
