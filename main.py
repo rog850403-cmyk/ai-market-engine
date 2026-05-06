@@ -1,108 +1,106 @@
-"""
-草稿發布器 — 解決問題②
-不自動發布到平台（避免帳號被封）
-改為：生成最優化草稿 + 告訴你什麼時候、去哪裡發
-"""
-import os
-from datetime import datetime, timedelta
+import asyncio, os
+from datetime import datetime
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+import httpx
 
-class DraftPublisher:
+app = FastAPI(title="AI Market Engine")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+GROQ_KEY   = os.getenv("GROQ_API_KEY", "")
+
+STATE = {"cycle": 0, "results": [], "last_run": None, "status": "running"}
+
+class Query(BaseModel):
+    goal: str = "find best market opportunity"
+
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return """
+    <html><head><title>AI Market Engine</title>
+    <style>body{background:#03050A;color:#00FF88;font-family:monospace;padding:40px}
+    h1{color:#fff} .card{background:#0a1628;padding:20px;border-radius:10px;margin:10px 0;border:1px solid #1a3048}
+    input{background:#0a1628;border:1px solid #1a3048;color:#fff;padding:10px;width:70%;border-radius:6px}
+    button{background:#00FF88;color:#000;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-weight:bold;margin-left:10px}
+    .tag{display:inline-block;background:#00FF8820;color:#00FF88;padding:2px 10px;border-radius:4px;font-size:12px;margin:4px}
+    </style></head>
+    <body>
+    <h1>⬡ AI Market Engine — 運行中</h1>
+    <div class="card">
+        <p style="color:#8aaec8">系統狀態：<span style="color:#00FF88">● ONLINE</span> &nbsp;|&nbsp; 多AI並行分析 &nbsp;|&nbsp; 7/24 自動運行</p>
+    </div>
+    <div class="card">
+        <h3 style="color:#FFD020">輸入目標，系統自動分析</h3>
+        <input id="goal" placeholder="例如：找出現在最好賣的AI工具類數位產品" />
+        <button onclick="run()">啟動</button>
+        <div id="result" style="margin-top:20px;color:#8aaec8;white-space:pre-wrap"></div>
+    </div>
+    <div class="card" id="history">
+        <h3 style="color:#1A8FFF">執行記錄</h3>
+        <div id="log" style="color:#8aaec8">等待第一次執行...</div>
+    </div>
+    <script>
+    async function run(){
+        const goal = document.getElementById('goal').value || 'find best AI product opportunity';
+        document.getElementById('result').textContent = '⟳ 多AI並行分析中...';
+        const r = await fetch('/run', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({goal})});
+        const d = await r.json();
+        document.getElementById('result').textContent = JSON.stringify(d, null, 2);
+        loadHistory();
+    }
+    async function loadHistory(){
+        const r = await fetch('/status');
+        const d = await r.json();
+        document.getElementById('log').textContent = JSON.stringify(d, null, 2);
+    }
+    loadHistory();
+    setInterval(loadHistory, 5000);
+    </script>
+    </body></html>
     """
-    誠實面對平台限制：
-    - Reddit 新帳號貼文會被自動過濾
-    - 自動化發布違反多數平台 ToS
-    
-    最佳策略：系統做 90% 的工作（研究+撰寫+優化）
-    你做 10%（複製貼上+手動發布）
-    這樣才是長期可持續的方式
-    """
 
-    def prepare_reddit_draft(self, copy_data: dict, product: dict, gap: dict) -> dict:
-        """準備 Reddit 草稿 + 最佳化建議"""
-        domain   = product.get("domain","business")
-        subreddit_map = {
-            "finance"  : [("r/passive_income","分享被動收入故事"),("r/financialindependence","財務自由討論"),("r/entrepreneur","創業者社群")],
-            "health"   : [("r/loseit","減重故事"),("r/fitness","健身討論"),("r/intermittentfasting","間歇性斷食")],
-            "learning" : [("r/learnprogramming","學編程"),("r/productivity","生產力"),("r/GetMotivated","勵志")],
-            "business" : [("r/Entrepreneur","創業"),("r/SideProject","副業"),("r/startups","新創")],
-            "aitools"  : [("r/ChatGPT","ChatGPT討論"),("r/artificial","AI討論"),("r/automation","自動化")],
-            "lifestyle": [("r/productivity","生產力"),("r/selfimprovement","自我提升"),("r/minimalism","極簡主義")],
-        }
-        subreddits = subreddit_map.get(domain, [("r/entrepreneur","創業者社群")])
+@app.get("/status")
+async def status():
+    return {**STATE, "time": datetime.now().isoformat(), "apis": {"gemini": bool(GEMINI_KEY), "groq": bool(GROQ_KEY)}}
 
-        # 分析最佳發布時機（美東時間）
-        best_times = {
-            "週一": "07:00–09:00 美東（台灣晚上 19:00–21:00）",
-            "週二": "08:00–10:00 美東（台灣晚上 20:00–22:00）",
-            "週四": "08:00–10:00 美東（台灣晚上 20:00–22:00）",
-            "週六": "10:00–12:00 美東（台灣晚上 22:00–00:00）",
-        }
+@app.post("/run")
+async def run(q: Query, bg: BackgroundTasks):
+    bg.add_task(_analyze, q.goal)
+    return {"msg": "分析啟動中", "goal": q.goal}
 
-        return {
-            "type"           : "reddit_draft",
-            "title"          : copy_data.get("title", ""),
-            "body"           : copy_data.get("copy", ""),
-            "best_subreddits": subreddits[:2],
-            "best_times"     : best_times,
-            "action_needed"  : "複製以下內容，到 reddit.com 手動發布（約2分鐘）",
-            "karma_note"     : "新帳號先在各subreddit留幾條有價值的評論，建立信任後再發推廣貼文",
-            "ready_at"       : datetime.now().isoformat(),
-        }
+async def _analyze(goal: str):
+    STATE["cycle"] += 1
+    results = []
 
-    def prepare_gumroad_draft(self, product: dict, copy_data: dict) -> dict:
-        """準備 Gumroad 上架草稿"""
-        return {
-            "type"           : "gumroad_draft",
-            "product_name"   : product.get("title",""),
-            "tagline"        : f"The complete guide to {product.get('pain_point','')[:50]}",
-            "description"    : copy_data.get("copy","")[:1500] if copy_data else product.get("description",""),
-            "price_usd"      : product.get("price_usd", 9.99),
-            "content_outline": product.get("content_outline",[]),
-            "cover_note"     : "用 Canva 免費版製作封面（模板搜索：ebook cover）",
-            "action_needed"  : "登入 gumroad.com → New Product → 複製以下資料填入（約5分鐘）",
-            "upload_steps"   : [
-                "登入 gumroad.com",
-                "點「Products」→「New Product」",
-                "選「Digital product」",
-                "把產品名稱、描述複製貼入",
-                "上傳PDF（用免費工具 Canva 或 Google Doc 生成）",
-                "設定價格",
-                "點「Publish」",
-            ],
-        }
+    if GEMINI_KEY:
+        try:
+            url  = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+            body = {"contents": [{"parts": [{"text": f"商業策略分析師。繁體中文回答。分析市場機會：{goal}\n給出：最佳產品、目標客群、推薦平台、預估月收益"}]}]}
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(url, json=body)
+            text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            results.append({"model": "Gemini", "content": text[:500]})
+        except Exception as e:
+            results.append({"model": "Gemini", "error": str(e)})
 
-    def prepare_medium_draft(self, copy_data: dict, product: dict) -> dict:
-        """準備 Medium 文章草稿（不需要karma，新帳號也能發）"""
-        return {
-            "type"          : "medium_draft",
-            "title"         : copy_data.get("title", ""),
-            "body"          : copy_data.get("copy",""),
-            "tags"          : self._get_tags(product.get("domain","")),
-            "why_medium"    : "Medium 新帳號也能立刻發文，而且有自己的流量，比Reddit風險低",
-            "monetize"      : "加入 Medium Partner Program 後文章可以獲得閱讀收益",
-            "action_needed" : "到 medium.com → Write → 複製貼入 → 發布（3分鐘）",
-        }
+    if GROQ_KEY:
+        try:
+            url  = "https://api.groq.com/openai/v1/chat/completions"
+            hdrs = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
+            body = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "system", "content": "市場分析師，繁體中文"}, {"role": "user", "content": f"分析市場機會：{goal}"}], "max_tokens": 500}
+            async with httpx.AsyncClient(timeout=20) as c:
+                r = await c.post(url, headers=hdrs, json=body)
+            text = r.json()["choices"][0]["message"]["content"]
+            results.append({"model": "Groq", "content": text[:500]})
+        except Exception as e:
+            results.append({"model": "Groq", "error": str(e)})
 
-    def _get_tags(self, domain: str) -> list:
-        tag_map = {
-            "finance"  : ["passive income","money","finance","side hustle","investing"],
-            "health"   : ["health","fitness","wellness","productivity","lifestyle"],
-            "learning" : ["learning","education","skills","productivity","career"],
-            "business" : ["entrepreneurship","business","startup","marketing","ai"],
-            "aitools"  : ["artificial intelligence","ChatGPT","AI tools","automation","technology"],
-            "lifestyle": ["productivity","self improvement","minimalism","habits","personal development"],
-        }
-        return tag_map.get(domain, ["entrepreneurship","productivity","ai"])
+    STATE["results"].append({"goal": goal, "results": results, "time": datetime.now().isoformat()})
+    STATE["last_run"] = datetime.now().isoformat()
 
-    def get_all_drafts(self, copies: dict, product: dict, gap: dict) -> dict:
-        """一次生成所有平台的草稿"""
-        return {
-            "reddit"  : self.prepare_reddit_draft(copies.get("reddit",{}), product, gap),
-            "gumroad" : self.prepare_gumroad_draft(product, copies.get("gumroad",{})),
-            "medium"  : self.prepare_medium_draft(copies.get("reddit",{}), product),
-            "summary" : {
-                "total_drafts" : 3,
-                "time_needed"  : "約15分鐘手動發布全部",
-                "priority"     : "Gumroad 先上架（收款）→ Medium 發文（流量）→ Reddit 發帖（推廣）",
-            }
-        }
+@app.on_event("startup")
+async def start():
+    print("AI Market Engine 啟動完成")
