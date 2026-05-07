@@ -1,0 +1,9 @@
+import requests,json,time
+GROQ="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"
+TG="8665260764:AAEB56LRlRmUB9G5IkCg-TyDwKQmERqdlxA"
+CHAT="6946239137"
+print("start")
+r=requests.post("https://api.groq.com/openai/v1/chat/completions",headers={"Authorization":"Bearer "+GROQ},json={"model":"llama-3.3-70b-versatile","messages":[{"role":"user","content":"hello"}],"max_tokens":50},timeout=20)
+print(r.status_code)
+r2=requests.post("https://api.telegram.org/bot"+TG+"/sendMessage",json={"chat_id":CHAT,"text":"test ok"},timeout=10)
+print(r2.status_code)
