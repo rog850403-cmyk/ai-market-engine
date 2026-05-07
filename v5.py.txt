@@ -1,0 +1,173 @@
+cat > autonomous_v5.py << 'ENDOFFILE'
+import json,time,schedule,requests
+from datetime import datetime,timedelta
+from concurrent.futures import ThreadPoolExecutor,as_completed
+from threading import Lock
+
+GEMINI="AIzaSyCOwbPDs4jcB9gM2KJsEncjNUKoNaNREVs"
+GROQ="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"
+OR="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"
+ZERNIO="sk_ebf0c5975104ab1f86ccca55747a8496aeefb9edcf6a9f6faeaa16f735f57cd8"
+TG_TOKEN="8665260764:AAEB56LRlRmUB9G5IkCg-TyDwKQmERqdlxA"
+TG_CHAT="6946239137"
+
+LOCK=Lock()
+
+DOMAINS=[
+{"id":"relationship","name":"感情關係","lang":"zh","seeds":["感情訊號","伴侶行為","分手前兆"]},
+{"id":"psychology","name":"人性心理","lang":"zh","seeds":["暗黑心理","情緒操控","人性弱點"]},
+{"id":"communication","name":"溝通人際","lang":"zh","seeds":["溝通技巧","隱性表達","衝突處理"]},
+{"id":"money","name":"財務副業","lang":"en","seeds":["passive income","side hustle","digital product"]},
+{"id":"business","name":"商業創業","lang":"en","seeds":["entrepreneur","market gap","startup"]},
+{"id":"aitools","name":"AI工具","lang":"en","seeds":["AI productivity","ChatGPT tips","automation"]},
+{"id":"health","name":"健康心理","lang":"en","seeds":["mental health","burnout","anxiety"]},
+{"id":"growth","name":"自我成長","lang":"zh","seeds":["習慣養成","自律方法","成長心態"]},
+{"id":"lifestyle","name":"生活美學","lang":"zh","seeds":["極簡生活","台灣生活","生活選擇"]},
+{"id":"taiwan","name":"台灣熱門","lang":"zh","seeds":["台灣年輕人","台灣職場","台灣趨勢"]},
+]
+
+def ai(engine,prompt,tokens=600):
+    try:
+        if engine=="groq":
+            r=requests.post("https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization":f"Bearer {GROQ}"},
+                json={"model":"llama-3.3-70b-versatile","messages":[{"role":"user","content":prompt}],"max_tokens":tokens},timeout=25)
+            return r.json()["choices"][0]["message"]["content"]
+        elif engine=="gemini":
+            r=requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI}",
+                json={"contents":[{"parts":[{"text":prompt}]}]},timeout=30)
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        elif engine in["deepseek","qwen"]:
+            models={"deepseek":"deepseek/deepseek-r1:free","qwen":"qwen/qwen3-8b:free"}
+            r=requests.post("https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization":f"Bearer {OR}","Content-Type":"application/json"},
+                json={"model":models[engine],"messages":[{"role":"user","content":prompt}],"max_tokens":tokens},timeout=35)
+            return r.json()["choices"][0]["message"]["content"]
+    except:
+        return ""
+
+def think(prompt,lang="zh"):
+    engines=["qwen","groq","gemini"] if lang=="zh" else ["groq","gemini","deepseek"]
+    answers=[]
+    for e in engines:
+        r=ai(e,prompt)
+        if r and len(r)>30:
+            answers.append({"ai":e,"text":r})
+        time.sleep(1)
+    if not answers:return ""
+    if len(answers)==1:return answers[0]["text"]
+    merge=f"整合以下{len(answers)}個AI分析，輸出最準確答案，{'繁體中文' if lang=='zh' else 'English'}：\n"+"".join([f'[{a["ai"]}]:{a["text"][:300]}\n' for a in answers])
+    m=ai("groq",merge,500)
+    return m if m else answers[0]["text"]
+
+def process(domain):
+    name=domain["name"];lang=domain["lang"]
+    print(f"  [掃描] {name}...")
+    result={"domain_id":domain["id"],"domain_name":name,"status":"processing"}
+    try:
+        p=f"""分析「{name}」領域，種子：{'/'.join(domain['seeds'][:2])}
+今天最熱的具體話題，輸出JSON（只輸出JSON，用{'繁體中文' if lang=='zh' else 'English'}）：
+{{"topic":"具體話題一句話","pain_point":"核心痛點","emotion":"情緒","virality_score":0到100,"monetize_score":0到100,"composite_score":平均分}}"""
+        raw=think(p,lang)
+        try:
+            clean=raw.strip()
+            s=clean.find("{");e=clean.rfind("}")+1
+            t=json.loads(clean[s:e])
+            t["domain"]=name;t["lang"]=lang
+            result["topic"]=t
+            score=t.get("composite_score",50)
+            print(f"  ✓ {name}: {t.get('topic','')[:30]} ({score}分)")
+        except:
+            result["topic"]={"topic":raw[:60],"composite_score":50,"domain":name,"lang":lang}
+            score=50
+
+        if score>=65:
+            cp=f"""你是暗面筆記。風格：看穿別人沒說的那一面。
+話題：{result['topic'].get('topic','')}
+輸出JSON：{{"threads":"貼文200字繁中","telegram":"精華80字","hook":"開場15字內"}}"""
+            raw2=think(cp,lang)
+            try:
+                clean2=raw2.strip();s=clean2.find("{");e=clean2.rfind("}")+1
+                result["content"]=json.loads(clean2[s:e])
+                result["action"]="publish"
+            except:
+                result["content"]={"threads":raw2[:200],"telegram":raw2[:80]}
+                result["action"]="publish"
+        else:
+            result["action"]="skip"
+            print(f"  ⚪ {name}: 分數不足({score})跳過")
+        result["status"]="done"
+    except Exception as ex:
+        result["status"]="error";result["error"]=str(ex)
+    return result
+
+def publish_all(results):
+    publishable=sorted([r for r in results if r.get("action")=="publish" and r.get("content")],
+        key=lambda x:x.get("topic",{}).get("composite_score",0),reverse=True)
+    print(f"\n◉ 發布 {len(publishable)} 個領域內容")
+    for i,r in enumerate(publishable[:5]):
+        c=r.get("content",{});t=c.get("threads","")
+        if not t:continue
+        try:
+            body={"text":t[:500],"platforms":["threads"]}
+            if i>0:
+                future=(datetime.utcnow()+timedelta(hours=i*1.5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                body["scheduledFor"]=future
+            resp=requests.post("https://zernio.com/api/v1/posts",
+                headers={"Authorization":f"Bearer {ZERNIO}","Content-Type":"application/json"},
+                json=body,timeout=15)
+            ok=resp.status_code in[200,201]
+            print(f"  {'✓' if ok else '✗'} Threads({'立即' if i==0 else f'+{i*1.5:.1f}h'}): {r['domain_name']}")
+        except Exception as ex:
+            print(f"  ✗ {r['domain_name']}: {ex}")
+        time.sleep(2)
+    if publishable:
+        tg=publishable[0].get("content",{}).get("telegram","")
+        if tg:
+            try:
+                requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                    json={"chat_id":TG_CHAT,"text":f"💡 {tg}\n\n— 暗面筆記"},timeout=15)
+                print(f"  ✓ Telegram: {publishable[0]['domain_name']}")
+            except:pass
+
+def run():
+    start=datetime.now()
+    print(f"\n{'='*50}")
+    print(f"⬡ 全自主系統 {start.strftime('%Y/%m/%d %H:%M')}")
+    print(f"  {len(DOMAINS)}個領域並行掃描")
+    print(f"{'='*50}\n")
+    results=[]
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures={ex.submit(process,d):d for d in DOMAINS}
+        for f in as_completed(futures):
+            r=f.result()
+            with LOCK:results.append(r)
+    results.sort(key=lambda x:x.get("topic",{}).get("composite_score",0),reverse=True)
+    print(f"\n{'─'*50}")
+    print(f"★ 今日掃描結果")
+    for r in results:
+        t=r.get("topic",{})
+        icon={"publish":"🟢","skip":"⚪","error":"🔴"}.get(r.get("action",""),"⚪")
+        print(f"{icon} {r.get('domain_name',''):6} {t.get('composite_score',0):3}分 {t.get('topic','')[:35]}")
+    publish_all(results)
+    ts=start.strftime("%m%d_%H%M")
+    with open(f"report_{ts}.json","w",encoding="utf-8") as f:
+        json.dump(results,f,ensure_ascii=False,indent=2)
+    print(f"\n✅ 完成 耗時{(datetime.now()-start).seconds}秒 | 報告: report_{ts}.json")
+
+if __name__=="__main__":
+    print("⬡ 暗面筆記 全自主系統 啟動")
+    run()
+    schedule.every().day.at("09:00").do(run)
+    schedule.every().day.at("21:00").do(run)
+    print("\n排程：每天 09:00 + 21:00 自動執行")
+    while True:
+        try:
+            schedule.run_pending()
+            time.sleep(60)
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(f"⚠ 自動恢復：{e}")
+            time.sleep(30)
+ENDOFFILE
