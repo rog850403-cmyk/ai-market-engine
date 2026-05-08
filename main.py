@@ -327,51 +327,8 @@ async def get_copies(): return {"copies": STATE["copies"]}
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    return """<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>AI Market Engine</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#020A0A;color:#00FFB8;font-family:'Courier New',monospace;font-size:13px}
-.bar{background:#060C16;padding:14px 24px;border-bottom:1px solid #0a1628;display:flex;justify-content:space-between;align-items:center}
-.dot{width:8px;height:8px;border-radius:50%;background:#00FFB8;display:inline-block;margin-right:8px;animation:blink 2s infinite}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;padding:18px 24px}
-.card{background:#060C16;border:1px solid #0a1628;border-radius:10px;padding:16px}
-.label{font-size:10px;letter-spacing:2px;color:#253545;margin-bottom:6px}
-.val{font-size:22px;font-weight:700;color:#FFF}
-.sec{padding:16px 24px 8px}
-h2{font-size:13px;letter-spacing:2px;color:#253545;margin-bottom:12px}
-textarea{width:100%;background:#060C16;border:1px solid #0a1628;border-radius:8px;padding:12px;color:#8aaec8;font-family:inherit;font-size:13px;resize:vertical;min-height:72px}
-textarea:focus{outline:none;border-color:#00FFB8}
-button{background:linear-gradient(135deg,#00FFB8,#00BCFF);border:none;border-radius:8px;padding:11px 24px;color:#000;font-weight:700;font-size:13px;cursor:pointer;margin-top:8px}
-.log{background:#020508;border:1px solid #0a1628;border-radius:8px;padding:14px;max-height:200px;overflow-y:auto;margin-top:10px;white-space:pre-wrap;line-height:1.6;font-size:12px}
-.tag{display:inline-block;padding:2px 8px;border-radius:13px;font-size:10px;margin-right:6px}
-.ok{color:#00FFB8}
-.warn{color:#FFB800}
-.content-box{background:#060C16;border:1px solid #0a1628;border-radius:8px;padding:16px;margin-top:10px;white-space:pre-wrap;line-height:1.8;font-size:13px;color:#cce}
-</style></head>
-<body>
-<div class="bar">
-  <div><span class="dot"></span><b>AI MARKET ENGINE</b> — 完整自動化版</div>
-  <div id="clock" style="font-size:11px;color:#253545"></div>
-</div>
-<div class="grid">
-  <div class="card"><div class="label">執行輪次</div><div class="val" id="cycle">0</div></div>
-  <div class="card"><div class="label">市場掃描</div><div class="val" id="gaps">0</div></div>
-  <div class="card"><div class="label">生成內容</div><div class="val" id="prods">0</div></div>
-  <div class="card"><div class="label">發布文案</div><div class="val" id="copies">0</div></div>
-  <div class="card"><div class="label">Gemini AI</div><div class="val" id="gem" style="font-size:14px">檢查中</div></div>
-  <div class="card"><div class="label">Groq AI</div><div class="val" id="grq" style="font-size:14px">檢查中</div></div>
-  <div class="card"><div class="label">OpenRouter</div><div class="val" id="orr" style="font-size:14px">檢查中</div></div>
-</div>
-<div class="sec">
-  <h2>手動觸發分析</h2>
-  <textarea id="goal" placeholder="輸入今天想分析的市場目標&#10;例如：找出今天台灣人最有共鳴的感情痛點，生成能變現的內容和文案"></textarea>
-  <button onclick="runAnalysis()">● 啟動完整分析</button>
-  <div class="loading" id="loading" style="display:none;color:#FFB800;margin-top:8px">⏳ 三個AI同時分析中... 約30-60秒查看結果</div>
-</div>
-<div class="sec">
-  <h2>最新痛點分析</h2>
-  <div class="log" id="gaps-log">等待系統掃描...</div>
-</div>
-<div class
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except:
+        return "<h1 style='color:#00FFB8;background:#000;padding:20px'>AI Market Engine Running</h1>"
