@@ -1,126 +1,78 @@
-"""
-資料庫層 — Supabase
-解決問題⑤：數據不持久，重啟後歸零
-使用 Supabase 免費方案，永久保存所有記錄
-"""
-import os, httpx, json
-from datetime import datetime
-
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY", "")
-
-HEADERS = lambda: {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "return=minimal",
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>AI Market Engine</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#020A0A;color:#00FFB8;font-family:'Courier New',monospace;font-size:13px}
+.bar{background:#060C16;padding:14px 24px;border-bottom:1px solid #0a1628;display:flex;justify-content:space-between;align-items:center}
+.dot{width:8px;height:8px;border-radius:50%;background:#00FFB8;display:inline-block;margin-right:8px;animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;padding:18px 24px}
+.card{background:#060C16;border:1px solid #0a1628;border-radius:10px;padding:16px}
+.label{font-size:10px;letter-spacing:2px;color:#253545;margin-bottom:6px}
+.val{font-size:22px;font-weight:700;color:#FFF}
+.sec{padding:16px 24px 8px}
+h2{font-size:13px;letter-spacing:2px;color:#253545;margin-bottom:12px}
+textarea{width:100%;background:#060C16;border:1px solid #0a1628;border-radius:8px;padding:12px;color:#8aaec8;font-family:inherit;font-size:13px;resize:vertical;min-height:72px}
+textarea:focus{outline:none;border-color:#00FFB8}
+button{background:linear-gradient(135deg,#00FFB8,#00BCFF);border:none;border-radius:8px;padding:11px 24px;color:#000;font-weight:700;font-size:13px;cursor:pointer;margin-top:8px}
+.log{background:#020508;border:1px solid #0a1628;border-radius:8px;padding:14px;max-height:200px;overflow-y:auto;margin-top:10px;white-space:pre-wrap;line-height:1.6;font-size:12px}
+.content-box{background:#060C16;border:1px solid #0a1628;border-radius:8px;padding:16px;margin-top:10px;white-space:pre-wrap;line-height:1.8;font-size:13px;color:#cce}
+</style></head>
+<body>
+<div class="bar">
+  <div><span class="dot"></span><b>AI MARKET ENGINE</b> — 完整自動化版</div>
+  <div id="clock" style="font-size:11px;color:#253545"></div>
+</div>
+<div class="grid">
+  <div class="card"><div class="label">執行輪次</div><div class="val" id="cycle">0</div></div>
+  <div class="card"><div class="label">市場掃描</div><div class="val" id="gaps">0</div></div>
+  <div class="card"><div class="label">生成內容</div><div class="val" id="prods">0</div></div>
+  <div class="card"><div class="label">發布文案</div><div class="val" id="copies">0</div></div>
+  <div class="card"><div class="label">Gemini AI</div><div class="val" id="gem" style="font-size:14px">檢查中</div></div>
+  <div class="card"><div class="label">Groq AI</div><div class="val" id="grq" style="font-size:14px">檢查中</div></div>
+  <div class="card"><div class="label">OpenRouter</div><div class="val" id="orr" style="font-size:14px">檢查中</div></div>
+</div>
+<div class="sec">
+  <h2>手動觸發分析</h2>
+  <textarea id="goal" placeholder="輸入今天想分析的市場目標&#10;例如：找出今天台灣人最有共鳴的感情痛點，生成能變現的內容"></textarea>
+  <button onclick="runAnalysis()">● 啟動完整分析</button>
+  <div id="loading" style="display:none;color:#FFB800;margin-top:8px">三個AI同時分析中... 約30-60秒查看結果</div>
+</div>
+<div class="sec">
+  <h2>最新痛點分析</h2>
+  <div class="log" id="gaps-log">等待系統掃描...</div>
+</div>
+<div class="sec">
+  <h2>最新發布內容</h2>
+  <div class="content-box" id="copies-log">等待內容生成...</div>
+</div>
+<script>
+setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleString('zh-TW')},1000)
+setInterval(async()=>{
+  try{
+    const s=await fetch('/status').then(r=>r.json())
+    document.getElementById('cycle').textContent=s.cycle||0
+    document.getElementById('gaps').textContent=s.gaps?.length||0
+    document.getElementById('prods').textContent=s.products?.length||0
+    document.getElementById('copies').textContent=s.copies?.length||0
+    document.getElementById('gem').textContent=s.apis?.gemini?'✓ 連接':'✗ 未連接'
+    document.getElementById('gem').style.color=s.apis?.gemini?'#00FFB8':'#FF4060'
+    document.getElementById('grq').textContent=s.apis?.groq?'✓ 連接':'✗ 未連接'
+    document.getElementById('grq').style.color=s.apis?.groq?'#00FFB8':'#FF4060'
+    document.getElementById('orr').textContent=s.apis?.openrouter?'✓ 連接':'✗ 未連接'
+    document.getElementById('orr').style.color=s.apis?.openrouter?'#00FFB8':'#FF4060'
+    if(s.last_topic)document.getElementById('gaps-log').textContent='痛點：'+s.last_topic+'\n\n恐懼：'+s.last_domain
+    if(s.last_content)document.getElementById('copies-log').textContent=s.last_content
+  }catch(e){}
+},3000)
+async function runAnalysis(){
+  const goal=document.getElementById('goal').value.trim()
+  if(!goal){alert('請輸入目標');return}
+  document.getElementById('loading').style.display='block'
+  try{
+    await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal})})
+    setTimeout(()=>{document.getElementById('loading').style.display='none'},60000)
+  }catch(e){document.getElementById('loading').style.display='none'}
 }
-
-class Database:
-    """
-    如果沒有設定 Supabase，自動降級為記憶體模式
-    系統不會因為沒有DB而停止運作
-    """
-    def __init__(self):
-        self.has_db = bool(SUPABASE_URL and SUPABASE_KEY)
-        self._memory = {"gaps":[],"products":[],"published":[],"revenue":[]}
-        if self.has_db:
-            print("[DB] Supabase 已連接，數據將永久保存")
-        else:
-            print("[DB] 記憶體模式（設定 SUPABASE_URL 啟用永久儲存）")
-
-    # ── 插入 ─────────────────────────────────
-    async def insert(self, table: str, data: dict) -> bool:
-        data["created_at"] = datetime.now().isoformat()
-        if self.has_db:
-            try:
-                url = f"{SUPABASE_URL}/rest/v1/{table}"
-                async with httpx.AsyncClient(timeout=10) as c:
-                    r = await c.post(url, headers=HEADERS(), json=data)
-                return r.status_code in [200, 201]
-            except Exception as e:
-                print(f"[DB ERROR] insert {table}: {e}")
-        # 記憶體備援
-        self._memory.setdefault(table, []).append(data)
-        return True
-
-    # ── 查詢 ─────────────────────────────────
-    async def select(self, table: str, limit: int = 20) -> list:
-        if self.has_db:
-            try:
-                url = f"{SUPABASE_URL}/rest/v1/{table}?order=created_at.desc&limit={limit}"
-                async with httpx.AsyncClient(timeout=10) as c:
-                    r = await c.get(url, headers=HEADERS())
-                return r.json() if r.status_code == 200 else []
-            except Exception as e:
-                print(f"[DB ERROR] select {table}: {e}")
-        return self._memory.get(table, [])[-limit:]
-
-    # ── 計數 ─────────────────────────────────
-    async def count(self, table: str) -> int:
-        if self.has_db:
-            try:
-                url = f"{SUPABASE_URL}/rest/v1/{table}?select=count"
-                hdrs = {**HEADERS(), "Prefer": "count=exact"}
-                async with httpx.AsyncClient(timeout=10) as c:
-                    r = await c.get(url, headers=hdrs)
-                return int(r.headers.get("content-range","0/0").split("/")[-1])
-            except:
-                pass
-        return len(self._memory.get(table, []))
-
-    # ── 取得統計報告 ──────────────────────────
-    async def get_stats(self) -> dict:
-        return {
-            "gaps_count"     : await self.count("gaps"),
-            "products_count" : await self.count("products"),
-            "published_count": await self.count("published"),
-            "revenue_count"  : await self.count("revenue"),
-            "storage"        : "Supabase" if self.has_db else "Memory",
-        }
-
-# ── 建立資料表的 SQL（在 Supabase 執行一次）──────
-SETUP_SQL = """
--- 在 Supabase Dashboard → SQL Editor 執行這段
-
-create table if not exists gaps (
-  id          bigint generated always as identity primary key,
-  domain      text,
-  domain_name text,
-  gap_type    text,
-  signal      text,
-  pain_score  int,
-  viral_score int,
-  best_product text,
-  best_platform text,
-  created_at  timestamptz default now()
-);
-
-create table if not exists products (
-  id          bigint generated always as identity primary key,
-  title       text,
-  domain      text,
-  platform    text,
-  price_usd   float,
-  format      text,
-  quality_score int,
-  created_at  timestamptz default now()
-);
-
-create table if not exists published (
-  id          bigint generated always as identity primary key,
-  product     text,
-  platform    text,
-  status      text,
-  url         text,
-  created_at  timestamptz default now()
-);
-
-create table if not exists revenue (
-  id          bigint generated always as identity primary key,
-  source      text,
-  amount_usd  float,
-  domain      text,
-  created_at  timestamptz default now()
-);
-"""
+</script>
+</body></html>
