@@ -1,654 +1,722 @@
-import asyncio, os, json, httpx, feedparser
+#!/usr/bin/env python3
+"""
+暗面筆記 AI 智能變現引擎 v6.0
+════════════════════════════════════════════════════════════
+核心升級：帳號主題智能偵測 + 多模型 AI 決策系統
+
+運作邏輯：
+  Step 1 → 偵測各平台近期發文，分析主題一致性
+  Step 2 → [有主題] 放大現有主題，最大化變現效率
+           [無主題] 多模型研究最佳利基，自動設定方向
+  Step 3 → 根據主題生成精準內容 + 匹配變現渠道
+  Step 4 → 多線收益並行，持續監控修正
+
+多模型架構：
+  Groq   → 快速內容生成（主力）
+  Gemini → 主題分析 + 利基研究（智能層）
+  OpenRouter → 備援 + 交叉驗證
+
+10 個平台 × 15+ 變現渠道 × 智能主題管理
+════════════════════════════════════════════════════════════
+"""
+
+import os, sys, time, json, random, logging, requests
 from datetime import datetime
-from fastapi import FastAPI, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pathlib import Path
 
-app = FastAPI(title="暗面筆記 AI變現系統 v6.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# ════════════════════════════════════════════════════════
+# 環境變數
+# ════════════════════════════════════════════════════════
+GROQ_KEY        = os.environ.get("GROQ_API_KEY", "")
+GEMINI_KEY      = os.environ.get("GEMINI_API_KEY", "")
+OPENROUTER_KEY  = os.environ.get("OPENROUTER_API_KEY", "")
 
-# ═══ 環境變數 ═══
-GEMINI_KEY     = os.getenv("GEMINI_API_KEY","")
-GROQ_KEY       = os.getenv("GROQ_API_KEY","")
-OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY","")
-ZERNIO_KEY     = os.getenv("ZERNIO_KEY","") or os.getenv("ZERNIO_API_KEY","")
-THREADS_ID     = os.getenv("THREADS_ACCOUNT_ID","")
-TG_TOKEN       = os.getenv("TG_TOKEN","")
-TG_CHAT        = os.getenv("TG_CHAT","")
-TG_PAID        = os.getenv("TG_PAID_CHANNEL_ID","")
-TG_PAID_LINK   = os.getenv("TG_PAID_LINK","https://t.me/+FARyRtXPp8NjMDc1")
-KOFI_LINK      = os.getenv("KOFI_LINK","https://ko-fi.com/o850403")
-X_CONSUMER_KEY = os.getenv("X_CONSUMER_KEY","")
-X_CONSUMER_SEC = os.getenv("X_CONSUMER_SECRET","")
-X_ACCESS_TOKEN = os.getenv("X_ACCESS_TOKEN","")
-X_ACCESS_SEC   = os.getenv("X_ACCESS_TOKEN_SECRET","")
-BSKY_HANDLE    = os.getenv("BLUESKY_HANDLE","shadownotestw.bsky.social")
-BSKY_PASSWORD  = os.getenv("BLUESKY_APP_PASSWORD","")
+TG_TOKEN        = os.environ.get("TG_TOKEN", "")
+TG_FREE         = os.environ.get("TG_FREE_CHAT",   os.environ.get("TG_CHAT", "6946239137"))
+TG_LOVE         = os.environ.get("TG_PAID_LOVE",   os.environ.get("TG_PAID_CHANNEL_ID", "-1003940762725"))
+TG_CAREER       = os.environ.get("TG_PAID_CAREER", "")
+TG_AI           = os.environ.get("TG_PAID_AI",     "")
 
-# ═══ 完整變現武器庫（不限定，AI自動選最高轉換）═══
-MONETIZE_WEAPONS = {
+META_TOKEN      = os.environ.get("META_ACCESS_TOKEN", os.environ.get("THREADS_ACCESS_TOKEN", ""))
+THREADS_UID     = os.environ.get("THREADS_USER_ID",   os.environ.get("THREADS_ACCOUNT_ID", ""))
+IG_UID          = os.environ.get("IG_USER_ID", "")
 
-    # A類：直接收款（最快變現）
-    "telegram_sub": {
-        "type": "直接收款",
-        "desc": "Telegram付費頻道訂閱",
-        "price": "NT$99/月",
-        "link": TG_PAID_LINK,
-        "conversion": 9,  # 轉換率評分
-        "best_for": ["心理", "職場", "社會", "感情", "財務", "AI"]
-    },
-    "kofi_tip": {
-        "type": "直接收款",
-        "desc": "Ko-fi打賞",
-        "price": "自由定價",
-        "link": KOFI_LINK,
-        "conversion": 7,
-        "best_for": ["感情", "心理", "生活", "所有類別"]
-    },
-    "gumroad_pdf": {
-        "type": "數位產品",
-        "desc": "Gumroad PDF報告/指南",
-        "price": "NT$149-499",
-        "link": "https://shadownotes.gumroad.com",
-        "conversion": 8,
-        "best_for": ["財務", "職場", "AI工具", "心理", "投資"]
-    },
-    "vocus_sub": {
-        "type": "訂閱收入",
-        "desc": "方格子付費訂閱文章",
-        "price": "NT$100-300/篇",
-        "link": "https://vocus.cc/user/@shadownotestw",
-        "conversion": 6,
-        "best_for": ["深度分析", "社會觀察", "AI科技", "財經"]
-    },
+TW_KEY          = os.environ.get("X_CONSUMER_KEY",    os.environ.get("TWITTER_API_KEY", ""))
+TW_SECRET       = os.environ.get("X_CONSUMER_SECRET", os.environ.get("TWITTER_API_SECRET", ""))
+TW_AT           = os.environ.get("X_ACCESS_TOKEN",    os.environ.get("TWITTER_ACCESS_TOKEN", ""))
+TW_AS           = os.environ.get("X_ACCESS_TOKEN_SECRET", os.environ.get("TWITTER_ACCESS_SECRET", ""))
 
-    # B類：聯盟行銷（高佣金優先）
-    "software_affiliate": {
-        "type": "聯盟行銷",
-        "desc": "AI工具/軟體訂閱聯盟（佣金30-70%）",
-        "examples": ["Notion", "Canva Pro", "ChatGPT Plus推薦"],
-        "commission": "30-70%循環",
-        "conversion": 8,
-        "best_for": ["AI科技", "生產力", "工具推薦"]
-    },
-    "books_affiliate": {
-        "type": "聯盟行銷",
-        "desc": "博客來AP書籍聯盟（3-6%）",
-        "link": "https://ap.books.com.tw",
-        "commission": "3-6%",
-        "conversion": 6,
-        "best_for": ["心理", "財務", "職場", "自我成長"]
-    },
-    "course_affiliate": {
-        "type": "聯盟行銷",
-        "desc": "線上課程聯盟（Udemy/Hahow 20-50%）",
-        "commission": "20-50%",
-        "conversion": 7,
-        "best_for": ["AI學習", "職場技能", "投資理財"]
-    },
-    "shopee_affiliate": {
-        "type": "聯盟行銷",
-        "desc": "蝦皮聯盟（1-5%）",
-        "commission": "1-5%",
-        "conversion": 5,
-        "best_for": ["生活", "健康", "3C產品"]
-    },
+BS_HANDLE       = os.environ.get("BLUESKY_HANDLE",   "shadownotestw.bsky.social")
+BS_PW           = os.environ.get("BLUESKY_APP_PASSWORD", os.environ.get("BLUESKY_PASSWORD", ""))
 
-    # C類：平台廣告分潤（長期累積）
-    "youtube_adsense": {
-        "type": "廣告分潤",
-        "desc": "YouTube AdSense",
-        "condition": "1000訂閱+4000小時",
-        "conversion": 4,
-        "best_for": ["影片內容", "所有類別"]
-    },
-    "medium_partner": {
-        "type": "廣告分潤",
-        "desc": "Medium Partner Program",
-        "condition": "100粉絲",
-        "conversion": 3,
-        "best_for": ["英文內容", "AI", "科技"]
-    }
+LI_TOKEN        = os.environ.get("LINKEDIN_ACCESS_TOKEN", "")
+LI_PERSON_ID    = os.environ.get("LINKEDIN_PERSON_ID", "")
+YT_OAUTH        = os.environ.get("YOUTUBE_OAUTH_TOKEN", "")
+PIN_TOKEN       = os.environ.get("PINTEREST_ACCESS_TOKEN", "")
+PIN_BOARD       = os.environ.get("PINTEREST_BOARD_ID", "")
+
+# ── 變現連結庫 ──────────────────────────────────────────
+M = {
+    "tg_love"   : os.environ.get("TG_PAID_LINK", "t.me/+FARyRtXPp8NjMDc1"),
+    "tg_career" : "t.me/shadownotes_career",
+    "tg_ai"     : "t.me/shadownotes_ai",
+    "kofi"      : os.environ.get("KOFI_LINK", "ko-fi.com/o850403"),
+    "gumroad"   : os.environ.get("GUMROAD_SELLER_ID", "shadownotes.gumroad.com"),
+    "consult"   : "ko-fi.com/o850403/commissions",
+    "books_tw"  : "books.com.tw/?aff=shadownotes",
+    "hahow"     : "hahow.in/?ref=shadownotes",
+    "pressplay" : "pressplay.cc/?ref=shadownotes",
+    "notion"    : "affiliate.notion.so/shadownotes",
+    "canva"     : "partner.canva.com/shadownotes",
+    "momo"      : "momo.dm/shadownotes",
 }
 
-# ═══ 平台DNA（嚴格分工）═══
-PLATFORM_DNA = {
-    "threads": {
-        "核心定位": "暗面筆記品牌主場，情緒共鳴",
-        "內容格式": "150字情緒炸彈+圖片",
-        "演算法關鍵": "分享>收藏>留言>按讚",
-        "最佳主題": "感情/職場/人性/心理/社會—任何觸動情緒的話題",
-        "禁忌": "外部連結放文末自然帶出",
-        "主要變現": ["telegram_sub", "kofi_tip"],
-        "風格": "說出你不敢說的那面，像深夜懂你的朋友"
-    },
-    "x_twitter": {
-        "核心定位": "觀點輸出，引發轉發討論",
-        "內容格式": "280字犀利論點+數據",
-        "演算法關鍵": "轉發>回覆>按讚",
-        "最佳主題": "AI科技/財經/社會時事/任何有爭議性的觀點",
-        "禁忌": "不能無觀點，不能太軟",
-        "主要變現": ["gumroad_pdf", "software_affiliate", "kofi_tip"],
-        "風格": "反常識論點，讓人忍不住轉發或反駁"
-    },
-    "bluesky": {
-        "核心定位": "深度知識，建立專業信任",
-        "內容格式": "300字深度分析",
-        "演算法關鍵": "原創洞見>互動",
-        "最佳主題": "AI未來/社會結構/心理學/任何需要深度思考的話題",
-        "禁忌": "不能太商業，不能無內涵",
-        "主要變現": ["vocus_sub", "kofi_tip"],
-        "風格": "批判性思考，有論有據"
-    },
-    "telegram_free": {
-        "核心定位": "引流漏斗入口",
-        "內容格式": "100字鉤子預告",
-        "最佳主題": "所有主題的前半段",
-        "主要變現": ["telegram_sub"],
-        "風格": "給前半，藏後半，讓人必須付費"
-    },
-    "telegram_paid": {
-        "核心定位": "最高價值內容，直接收入",
-        "內容格式": "500字完整深度版",
-        "最佳主題": "所有主題完整版",
-        "主要變現": ["telegram_sub"],
-        "風格": "這是公開場合不說的版本"
-    }
+STATE_FILE = Path("/tmp/sn_state.json")
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s │ %(levelname)s │ %(message)s", datefmt="%H:%M:%S")
+log = logging.getLogger("ShadowNotes.v6")
+
+# ════════════════════════════════════════════════════════
+# 各平台基礎設定（不含利基，由智能層決定）
+# ════════════════════════════════════════════════════════
+PLATFORM_BASE = {
+    "threads"    : {"name": "Threads @shadow.notes.tw",     "lang": "繁體中文", "max": 490,  "type": "social"},
+    "instagram"  : {"name": "Instagram @shadow.notes.tw",   "lang": "繁體中文", "max": 400,  "type": "visual"},
+    "tiktok"     : {"name": "TikTok @shadownotes_tw",        "lang": "繁體中文", "max": 1200, "type": "video_script"},
+    "twitter"    : {"name": "Twitter/X @shadownotestw",      "lang": "繁體中文", "max": 270,  "type": "social"},
+    "linkedin"   : {"name": "LinkedIn 暗面筆記",              "lang": "繁體中文", "max": 600,  "type": "professional"},
+    "bluesky"    : {"name": "Bluesky @shadownotestw.bsky",   "lang": "繁體中文", "max": 295,  "type": "knowledge"},
+    "yt_comm"    : {"name": "YouTube Community @暗面筆記",    "lang": "繁體中文", "max": 500,  "type": "knowledge"},
+    "youtube"    : {"name": "YouTube @暗面筆記（影片腳本）",  "lang": "繁體中文", "max": 2000, "type": "video_script"},
+    "pinterest"  : {"name": "Pinterest @shadownotes",        "lang": "繁體中文", "max": 300,  "type": "visual"},
+    "tg_free"    : {"name": "Telegram 暗面筆記（免費）",      "lang": "繁體中文", "max": 800,  "type": "newsletter"},
+    "tg_love"    : {"name": "TG感情深度頻道（NT$99/月）",     "lang": "繁體中文", "max": 1500, "type": "paid"},
+    "tg_career"  : {"name": "TG職場博弈頻道（NT$99/月）",    "lang": "繁體中文", "max": 1500, "type": "paid"},
+    "tg_ai"      : {"name": "TG AI觀察站（NT$129/月）",       "lang": "繁體中文", "max": 1800, "type": "paid"},
 }
 
-STATE = {
-    "cycle": 0, "status": "running",
-    "gaps": [], "products": [], "copies": [],
-    "last_run": None, "next_run": "等待排程",
-    "last_content": "", "last_topic": "", "last_domain": "",
-    "revenue_log": [], "total_cta_count": 0
-}
+# ════════════════════════════════════════════════════════
+# 多模型 AI 呼叫層
+# ════════════════════════════════════════════════════════
 
-# ═══ AI呼叫 ═══
-async def call_groq(prompt, tokens=700):
-    if not GROQ_KEY: return ""
+def _call_groq(prompt: str, max_tokens: int = 1200, temp: float = 0.7) -> str:
     try:
-        async with httpx.AsyncClient(timeout=45) as c:
-            r = await c.post("https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
-                json={"model": "llama-3.3-70b-versatile",
-                    "messages": [
-                        {"role": "system", "content": "你是台灣頂尖內容策略和心理行銷專家，精通各平台演算法和變現策略，用繁體中文回答"},
-                        {"role": "user", "content": prompt}
-                    ], "max_tokens": tokens, "temperature": 0.85})
-            return r.json()["choices"][0]["message"]["content"]
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+            json={"model": "llama-3.3-70b-versatile",
+                  "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": max_tokens, "temperature": temp},
+            timeout=45
+        )
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip()
+        log.warning(f"Groq {r.status_code}: {r.text[:100]}")
     except Exception as e:
-        print(f"Groq: {e}")
-        return ""
+        log.warning(f"Groq error: {e}")
+    return ""
 
-async def call_gemini(prompt, tokens=700):
-    if not GEMINI_KEY: return ""
+def _call_gemini(prompt: str) -> str:
+    if not GEMINI_KEY:
+        return ""
     try:
-        async with httpx.AsyncClient(timeout=45) as c:
-            r = await c.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
-                json={"contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"maxOutputTokens": tokens}})
-            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
+            json={"contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1000}},
+            timeout=30
+        )
+        if r.status_code == 200:
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        log.warning(f"Gemini {r.status_code}: {r.text[:100]}")
     except Exception as e:
-        print(f"Gemini: {e}")
-        return ""
+        log.warning(f"Gemini error: {e}")
+    return ""
 
-async def call_openrouter(prompt, tokens=500):
-    if not OPENROUTER_KEY: return ""
+def _call_openrouter(prompt: str, model: str = "mistralai/mixtral-8x7b-instruct") -> str:
+    if not OPENROUTER_KEY:
+        return ""
     try:
-        async with httpx.AsyncClient(timeout=45) as c:
-            r = await c.post("https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENROUTER_KEY}", "Content-Type": "application/json"},
-                json={"model": "mistralai/mistral-7b-instruct:free",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": tokens})
-            return r.json()["choices"][0]["message"]["content"]
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENROUTER_KEY}", "Content-Type": "application/json"},
+            json={"model": model,
+                  "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": 800},
+            timeout=30
+        )
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        print(f"OpenRouter: {e}")
-        return ""
+        log.warning(f"OpenRouter error: {e}")
+    return ""
 
-# ═══ LAYER 1：全市場情報掃描 ═══
-async def scan_market():
-    sources = []
-    feeds = [
-        "https://www.storm.mg/rss",
-        "https://technews.tw/feed/",
-        "https://www.cheers.com.tw/rss",
-        "https://www.businessweekly.com.tw/rss",
-        "https://trends.google.com/trends/trendingsearches/daily/rss?geo=TW",
-        "https://www.cna.com.tw/rssfeed/rss2/index/aall.aspx",
-        "https://www.inside.com.tw/feed",
-        "https://www.managertoday.com.tw/rss",
-    ]
-    for url in feeds:
-        try:
-            feed = feedparser.parse(url)
-            for entry in feed.entries[:3]:
-                if entry.get("title"):
-                    sources.append({
-                        "title": entry.get("title",""),
-                        "summary": entry.get("summary","")[:150]
-                    })
-        except: continue
-    return sources
-
-# ═══ LAYER 2：AI自動判斷最佳變現方案 ═══
-async def ai_monetize_selector(topic_category: str, scene: str) -> dict:
-    """AI自動選出這個話題在每個平台的最高轉換變現方式"""
-
-    prompt = f"""你是變現策略AI。
-
-話題類別：{topic_category}
-話題場景：{scene}
-
-分析這個話題在各平台的最佳變現方式：
-
-可用變現武器：
-- telegram_sub：TG付費頻道NT$99/月（轉換率高，適合所有深度內容）
-- kofi_tip：Ko-fi打賞（適合情感共鳴內容）
-- gumroad_pdf：PDF報告NT$149-499（適合有具體方法論的內容）
-- vocus_sub：方格子付費文（適合深度分析）
-- software_affiliate：AI工具聯盟佣金30-70%（適合科技內容）
-- books_affiliate：博客來書籍3-6%（適合任何有推薦書的內容）
-- course_affiliate：線上課程20-50%（適合技能類內容）
-
-輸出JSON：
-{{
-  "threads_monetize": "最適合的變現方式key",
-  "threads_cta": "Threads結尾CTA文字（自然不生硬）",
-  "x_monetize": "最適合的變現方式key",
-  "x_cta": "X結尾CTA",
-  "bluesky_monetize": "最適合的變現方式key",
-  "bluesky_cta": "Bluesky結尾CTA",
-  "top_revenue_line": "這個話題最高潛力收入線",
-  "reason": "為什麼這樣選"
-}}
-只輸出JSON。"""
-
+def _parse_json_safe(text: str) -> dict:
+    """安全解析 JSON，支援 markdown code block"""
     try:
-        result = await call_groq(prompt, 400)
-        data = json.loads(result)
-        # 加入實際連結
-        for key in ["threads_monetize", "x_monetize", "bluesky_monetize"]:
-            weapon_key = data.get(key, "telegram_sub")
-            weapon = MONETIZE_WEAPONS.get(weapon_key, MONETIZE_WEAPONS["telegram_sub"])
-            data[f"{key}_link"] = weapon.get("link", TG_PAID_LINK)
-        return data
+        import re
+        text = re.sub(r"```(?:json)?\n?", "", text).strip()
+        text = text[:text.rfind("}")+1] if "}" in text else text
+        return json.loads(text)
     except:
+        return {}
+
+# ════════════════════════════════════════════════════════
+# 核心智能層：帳號主題偵測器
+# ════════════════════════════════════════════════════════
+
+class AccountIntelligence:
+    """
+    帳號智能分析器
+    偵測主題 → 有主題放大 / 無主題研究最佳利基
+    """
+
+    def __init__(self):
+        self.state = self._load()
+
+    def _load(self) -> dict:
+        try:
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except:
+            return {}
+
+    def _save(self):
+        STATE_FILE.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ── 對外主介面 ────────────────────────────────────────
+    def get_strategy(self, platform_key: str) -> dict:
+        """
+        取得平台發文策略
+        返回：{theme, niche, voice, topics, cta_pool, monetization, confidence}
+        """
+        cached = self.state.get(platform_key, {})
+        age    = time.time() - cached.get("ts", 0)
+
+        # 快取6小時，避免過度呼叫API
+        if age < 21600 and cached.get("theme"):
+            log.info(f"📋 [{platform_key}] 快取策略：{cached['theme']} ({cached.get('confidence',0):.0f}%)")
+            return cached
+
+        log.info(f"🔍 [{platform_key}] 開始帳號智能分析...")
+
+        # Step 1：抓取近期發文
+        recent = self._fetch_posts(platform_key)
+
+        if recent and len(recent) >= 3:
+            # Step 2a：有發文 → 偵測主題
+            strategy = self._detect_and_amplify(platform_key, recent)
+        else:
+            # Step 2b：無發文 → 研究最佳利基
+            strategy = self._research_niche(platform_key)
+
+        strategy["ts"] = time.time()
+        self.state[platform_key] = strategy
+        self._save()
+
+        log.info(f"✅ [{platform_key}] 策略確定：{strategy.get('theme')} | 信心度 {strategy.get('confidence',0):.0f}%")
+        return strategy
+
+    # ── 抓取平台近期發文 ──────────────────────────────────
+    def _fetch_posts(self, key: str) -> list[str]:
+        """從各平台 API 抓取最近發文文字"""
+        try:
+            if key == "threads" and META_TOKEN and THREADS_UID:
+                r = requests.get(
+                    f"https://graph.threads.net/v1.0/{THREADS_UID}/threads",
+                    params={"fields": "text,timestamp", "limit": 20, "access_token": META_TOKEN},
+                    timeout=15
+                )
+                if r.status_code == 200:
+                    data = r.json().get("data", [])
+                    return [p.get("text", "") for p in data if p.get("text")]
+
+            if key in ("twitter",) and TW_KEY:
+                # Twitter v2 自己帳號時間軸（需 user_id）
+                pass  # 需 OAuth 2.0，暫用空
+
+            if key == "bluesky" and BS_HANDLE:
+                r = requests.get(
+                    f"https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed",
+                    params={"actor": BS_HANDLE, "limit": 20}, timeout=15
+                )
+                if r.status_code == 200:
+                    items = r.json().get("feed", [])
+                    return [i.get("post", {}).get("record", {}).get("text", "") for i in items]
+
+            # TG 已發內容從 state 讀取
+            if key in ("tg_free", "tg_love", "tg_career", "tg_ai"):
+                return self.state.get(f"{key}_history", [])[-20:]
+
+        except Exception as e:
+            log.warning(f"⚠️  fetch_posts [{key}]: {e}")
+        return []
+
+    # ── 主題偵測 + 放大策略 ───────────────────────────────
+    def _detect_and_amplify(self, key: str, posts: list[str]) -> dict:
+        posts_sample = "\n---\n".join(posts[:12])
+        base = PLATFORM_BASE[key]
+
+        prompt = f"""你是一位社群媒體策略分析師。
+
+分析以下來自「{base['name']}」的最近貼文，判斷：
+
+貼文內容：
+{posts_sample}
+
+請以 JSON 回答：
+{{
+  "consistency_score": 主題一致性分數0到100,
+  "has_clear_theme": true或false,
+  "main_theme": "主要主題（10字內）",
+  "theme_description": "詳細描述（30字內）",
+  "content_drift": true或false,
+  "drift_description": "如果有跑偏，說明跑到哪裡了",
+  "target_audience": "最符合這內容的讀者群",
+  "monetization_match": "這主題最適合的3個變現方式，逗號分隔",
+  "amplify_direction": "如何放大現有主題的建議（40字內）",
+  "topics_to_create": ["建議主題1", "建議主題2", "建議主題3", "建議主題4", "建議主題5"]
+}}"""
+
+        g1 = _parse_json_safe(_call_groq(prompt))
+        g2 = _parse_json_safe(_call_gemini(prompt))
+
+        # 合併兩個模型的判斷
+        score1 = g1.get("consistency_score", 0)
+        score2 = g2.get("consistency_score", score1)
+        avg    = (score1 + score2) / 2
+        theme  = g1.get("main_theme") or g2.get("main_theme") or "待確定"
+        drift  = g1.get("content_drift") or g2.get("content_drift")
+
+        if avg >= 65:
+            # 有清晰主題：放大策略
+            return self._build_amplify_strategy(key, theme, avg, g1, g2)
+        else:
+            # 主題模糊或跑偏：重新定向
+            log.warning(f"⚠️  [{key}] 主題一致性只有 {avg:.0f}%，啟動重新定向")
+            drift_desc = g1.get("drift_description", "")
+            return self._research_niche(key, context=f"現有內容跑偏（{drift_desc}），需要重新設定主題")
+
+    def _build_amplify_strategy(self, key: str, theme: str, confidence: float, g1: dict, g2: dict) -> dict:
+        """有主題：建立放大策略"""
+        topics = list(set(
+            g1.get("topics_to_create", []) + g2.get("topics_to_create", [])
+        ))[:15] or [f"關於{theme}的深度分析"]
+
+        money_match = g1.get("monetization_match", "")
+        cta_pool    = self._build_cta_pool(key, theme, money_match)
+
         return {
-            "threads_monetize": "telegram_sub",
-            "threads_cta": f"完整分析→ {TG_PAID_LINK}",
-            "threads_monetize_link": TG_PAID_LINK,
-            "x_monetize": "gumroad_pdf",
-            "x_cta": f"完整報告 https://shadownotes.gumroad.com",
-            "x_monetize_link": "https://shadownotes.gumroad.com",
-            "bluesky_monetize": "vocus_sub",
-            "bluesky_cta": f"深度分析 https://vocus.cc/user/@shadownotestw",
-            "bluesky_monetize_link": "https://vocus.cc/user/@shadownotestw",
-            "top_revenue_line": "TG付費頻道",
-            "reason": "備援方案"
+            "mode"           : "AMPLIFY",
+            "theme"          : theme,
+            "niche"          : g1.get("theme_description", theme),
+            "confidence"     : confidence,
+            "audience"       : g1.get("target_audience", "台灣用戶"),
+            "voice"          : f"深耕{theme}領域：真實洞察，讓讀者感覺被說中，有情緒共鳴",
+            "amplify_tip"    : g1.get("amplify_direction", ""),
+            "topics"         : topics,
+            "cta_pool"       : cta_pool,
+            "monetization"   : money_match,
         }
 
-# ═══ LAYER 3：六AI委員會選題 ═══
-async def committee(trends):
-    now = datetime.now()
-    h = now.hour
-    if 6<=h<10: ctx = "早晨通勤，剛性需求最強，情緒防線最低"
-    elif 11<=h<14: ctx = "午休，工作壓力下偷滑手機，需要共鳴出口"
-    elif 17<=h<20: ctx = "下班後，空洞感最強烈，渴望被理解"
-    else: ctx = "深夜，睡不著，最脆弱，各種念頭湧上來"
+    # ── 利基研究（無主題或跑偏時觸發）────────────────────
+    def _research_niche(self, key: str, context: str = "") -> dict:
+        base = PLATFORM_BASE[key]
+        ptype = base.get("type", "social")
 
-    trends_text = "\n".join([f"- {t['title']}" for t in trends[:12]])
+        prompt = f"""你是台灣社群媒體變現策略顧問。
 
-    p1, p2, p3 = await asyncio.gather(
-        call_groq(f"""心理學家AI。時段：{ctx}
-熱點清單：
-{trends_text}
+平台：{base['name']}（類型：{ptype}）
+語言：{base['lang']}
+目標：找出最短時間、最高效益的變現利基
+{f'背景：{context}' if context else ''}
 
-分析哪個話題命中最深的「隱性恐懼」
-（觀眾早就感受到但沒辦法說清楚的痛）
-不限定類別，從所有熱點中找最強的
-輸出：話題|隱性恐懼|目標族群|情緒觸發點|分數1-10""", 350),
+請分析台灣2025-2026年以下哪個利基最適合這個平台：
+- 感情心理分析
+- 職場人性博弈
+- AI工具與數位工作
+- 財務心理與金錢觀
+- 親子教養心理
+- 自我成長與心理健康
+- 美食旅遊生活
+- 投資理財觀念
 
-        call_gemini(f"""行為經濟學家AI。時段：{ctx}
-熱點清單：
-{trends_text}
+評分標準：
+1. 台灣市場受眾規模（粉絲成長速度）
+2. 變現難易度（廣告/聯盟/訂閱/服務）
+3. 與平台類型的契合度
+4. 競爭程度（越低越好）
+5. 預估月收入潛力
 
-分析哪個話題有最強「損失趨避」效果
-（不解決這個問題，觀眾會失去什麼）
-輸出：話題|損失框架|剛性需求程度高中低|最佳變現方式|分數1-10""", 350),
+以 JSON 格式回答：
+{{
+  "recommended_niche": "最推薦利基名稱",
+  "niche_description": "25字以內的定位描述",
+  "target_audience": "具體讀者描述",
+  "voice_guide": "語氣與風格指引（30字）",
+  "monetization_stack": ["主要變現1", "主要變現2", "主要變現3", "次要1", "次要2"],
+  "estimated_monthly_nt": "預估月收入NT$範圍",
+  "time_to_first_revenue": "預估首次收入時間",
+  "starter_topics": ["開場主題1", "主題2", "主題3", "主題4", "主題5", "主題6", "主題7"],
+  "why_this_niche": "推薦理由（40字）"
+}}"""
 
-        call_openrouter(f"""暴力文案策略師AI。時段：{ctx}
-熱點清單：
-{trends_text}
+        g1 = _parse_json_safe(_call_groq(prompt, temp=0.6))
+        g2 = _parse_json_safe(_call_gemini(prompt))
+        g3 = _parse_json_safe(_call_openrouter(prompt)) if OPENROUTER_KEY else {}
 
-找出最適合「揭露真相」格式的話題
-（說出觀眾知道但沒人說破的事）
-輸出：話題|第一句話|揭露的真相|付費鉤子|分數1-10""", 350)
-    )
+        # 三模型投票決定最佳利基
+        niche = self._vote_niche([
+            g1.get("recommended_niche"),
+            g2.get("recommended_niche"),
+            g3.get("recommended_niche")
+        ]) or g1.get("recommended_niche", "感情心理分析")
 
-    final = await call_groq(f"""你是六AI委員會最終仲裁者。
+        topics  = list(set(g1.get("starter_topics", []) + g2.get("starter_topics", []) + g3.get("starter_topics", [])))[:15]
+        money   = g1.get("monetization_stack", [])
+        cta_pool= self._build_cta_pool(key, niche, ", ".join(money))
 
-心理學家分析：{p1[:250]}
-行為經濟學家：{p2[:250]}
-暴力文案師：{p3[:250]}
-當前時段：{ctx}
+        log.info(f"🧠 [{key}] 多模型投票結果：{niche}（Groq:{g1.get('recommended_niche')} | Gemini:{g2.get('recommended_niche')} | OR:{g3.get('recommended_niche')}）")
 
-整合三個AI的分析，選出今天最有爆發力+變現潛力的話題。
-不限定類別，選最強的那個。
+        return {
+            "mode"           : "NEW_NICHE",
+            "theme"          : niche,
+            "niche"          : g1.get("niche_description", niche),
+            "confidence"     : 100.0,
+            "audience"       : g1.get("target_audience", "台灣用戶"),
+            "voice"          : g1.get("voice_guide", f"專注{niche}，有深度有溫度"),
+            "amplify_tip"    : g1.get("why_this_niche", ""),
+            "topics"         : topics,
+            "cta_pool"       : cta_pool,
+            "monetization"   : ", ".join(money),
+            "est_revenue"    : g1.get("estimated_monthly_nt", ""),
+            "time_to_rev"    : g1.get("time_to_first_revenue", ""),
+        }
 
-輸出嚴格JSON：
-{{"scene":"具體話題描述","category":"話題類別（不限定，可以是任何類別）","fear":"隱性恐懼","hook":"第一句話（具體畫面，讓人說這說的就是我）","truth":"揭露的真相（反常識但無法否認）","paid_hook":"付費鉤子（給前半藏後半）","audience":"目標族群","time_ctx":"{ctx}","monetize_potential":"高/中/低"}}
-只輸出JSON。""", 500)
+    @staticmethod
+    def _vote_niche(candidates: list) -> str:
+        """多模型投票，取最多票的利基"""
+        from collections import Counter
+        valid = [c for c in candidates if c]
+        if not valid:
+            return "感情心理分析"
+        return Counter(valid).most_common(1)[0][0]
 
+    @staticmethod
+    def _build_cta_pool(key: str, theme: str, money_match: str) -> list[str]:
+        """根據主題自動生成最匹配的 CTA"""
+        pool = []
+
+        if "感情" in theme or "情感" in theme or "心理" in theme:
+            pool += [
+                f"\n\n深度分析 → {M['tg_love']}（NT$99/月）\n支持創作 ☕ {M['kofi']}\n#{theme.replace(' ','')} #暗面筆記",
+                f"\n\n電子書《從文字看穿對方》→ {M['gumroad']} NT$199\n{M['tg_love']} 深度頻道\n#感情心理 #暗面筆記",
+                f"\n\n一對一諮詢 → {M['consult']}\n推薦書單 📚 {M['books_tw']}\n#感情 #暗面筆記",
+                f"\n\nHahow感情課 → {M['hahow']}\n深度頻道 → {M['tg_love']}\n#感情心理",
+            ]
+
+        if "職場" in theme or "工作" in theme or "職涯" in theme:
+            pool += [
+                f"\n\n職場深度頻道 → {M['tg_career']}（NT$99/月）\nPressplay課程 → {M['pressplay']}\n#職場 #暗面筆記",
+                f"\n\n職涯諮詢 → {M['consult']}\nHahow → {M['hahow']}\n#職場人性",
+            ]
+
+        if "AI" in theme or "數位" in theme or "科技" in theme:
+            pool += [
+                f"\n\nAI觀察站 → {M['tg_ai']}（NT$129/月）\nNotion → {M['notion']}\n#AI時代 #暗面筆記",
+                f"\n\nCanva Pro → {M['canva']}\nHahow AI課 → {M['hahow']}\n#AI工具",
+            ]
+
+        if "財務" in theme or "金錢" in theme or "理財" in theme:
+            pool += [
+                f"\n\n電子書 → {M['gumroad']} NT$199\n支持創作 ☕ {M['kofi']}\n#財務心理 #暗面筆記",
+                f"\n\nmomo推薦 → {M['momo']}\n深度頻道 → {M['tg_love']}\n#財務 #暗面筆記",
+            ]
+
+        # 通用 CTA（確保 pool 不為空）
+        pool += [
+            f"\n\n支持創作 ☕ {M['kofi']}\n深度內容 → {M['tg_love']}\n#暗面筆記",
+            f"\n\n電子書 → {M['gumroad']}\n聯盟推薦 → {M['books_tw']}\n#暗面筆記",
+        ]
+
+        return pool
+
+    # ── 記錄已發內容供下次分析用 ────────────────────────────
+    def record_post(self, key: str, content: str):
+        hist_key = f"{key}_history"
+        hist = self.state.get(hist_key, [])
+        hist.append(content[:200])  # 只存前200字
+        self.state[hist_key] = hist[-30:]  # 保留最近30篇
+        self._save()
+
+
+# ════════════════════════════════════════════════════════
+# 智能內容生成器
+# ════════════════════════════════════════════════════════
+
+ai = AccountIntelligence()
+
+def generate(key: str) -> tuple[str, str]:
+    """
+    生成內容
+    返回：(content, topic)
+    """
+    strategy = ai.get_strategy(key)
+    base     = PLATFORM_BASE[key]
+
+    topics   = strategy.get("topics", ["請分享一個觀察"])
+    used_key = f"{key}_used"
+    used     = ai.state.get(used_key, [])
+    fresh    = [t for t in topics if t not in used]
+    if not fresh:
+        ai.state[used_key] = []
+        fresh = topics
+    topic    = random.choice(fresh)
+    ai.state[used_key] = (ai.state.get(used_key, []) + [topic])[-50:]
+    ai._save()
+
+    cta   = random.choice(strategy.get("cta_pool", [f"\n\n暗面筆記 {M['kofi']}"]))
+    mode  = strategy.get("mode", "AMPLIFY")
+    theme = strategy.get("theme", "")
+
+    prompt = f"""你是「暗面筆記」旗下「{base['name']}」的靈魂寫手。
+
+【帳號主題】{theme} — {strategy.get('niche', '')}
+【操作模式】{"🔥 放大現有主題成效" if mode == "AMPLIFY" else "🆕 建立新主題方向"}
+【目標讀者】{strategy.get('audience', '台灣用戶')}
+【語氣風格】{strategy.get('voice', '真實有溫度')}
+【強化方向】{strategy.get('amplify_tip', '')}
+【平台格式】{base.get('type', 'social')} — {"短文純文字" if base['max'] < 500 else "完整深度文章" if base['max'] > 1000 else "中篇觀察文"}，最多 {base['max']} 字，繁體中文
+
+【寫作鐵則】
+- 第一句讓人停下來，像被說中了什麼
+- 具體場景和行為，不說抽象道理
+- 製造情緒共鳴，不給完整答案
+- 沒有 AI 感，像真人私下說的話
+- 嚴格鎖定主題「{theme}」，不跑偏到其他話題
+
+請針對「{topic}」寫一篇完整內容。只輸出正文，不要標題或說明。"""
+
+    # 優先用 Groq，失敗改 Gemini
+    body = _call_groq(prompt, max_tokens=1000, temp=0.88)
+    if not body:
+        body = _call_gemini(prompt)
+    if not body:
+        log.error(f"❌ [{key}] 所有模型生成失敗")
+        return "", topic
+
+    full = (body + cta)[: base["max"]]
+    log.info(f"✅ [{key}] {mode} | 主題：{topic[:20]}...")
+
+    # 記錄發文供下次分析
+    ai.record_post(key, full)
+    return full, topic
+
+
+# ════════════════════════════════════════════════════════
+# 各平台發文函式（維持 v5.0 架構）
+# ════════════════════════════════════════════════════════
+
+def _tg(text: str, chat: str) -> bool:
+    if not chat or not TG_TOKEN:
+        return False
     try:
-        result = json.loads(final)
-        if result.get("scene"): return result
-    except: pass
+        r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+            json={"chat_id": chat, "text": text, "disable_web_page_preview": False}, timeout=20)
+        ok = r.status_code == 200
+        log.info(f"{'✅' if ok else '❌'} TG {str(chat)[:12]}")
+        return ok
+    except Exception as e:
+        log.error(f"❌ TG: {e}"); return False
 
-    return {
-        "scene": "傳了訊息看到已讀，等了很久沒回",
-        "category": "感情關係",
-        "fear": "害怕自己不重要",
-        "hook": "你傳了訊息，他已讀不回。你告訴自己沒關係。但你還是看了第37次。",
-        "truth": "已讀不回不是沒看到，是選擇不回",
-        "paid_hook": "真正讓人已讀不回的原因比你想的更殘忍",
-        "audience": "25-35歲",
-        "time_ctx": ctx,
-        "monetize_potential": "高"
-    }
-
-# ═══ LAYER 4：各平台專屬內容生成 ═══
-async def generate_all(pain, monetize_plan):
-    hook = pain.get("hook","")
-    truth = pain.get("truth","")
-    paid_hook = pain.get("paid_hook","")
-    ctx = pain.get("time_ctx","")
-    cat = pain.get("category","")
-
-    threads_cta = monetize_plan.get("threads_cta", f"完整分析→ {TG_PAID_LINK}")
-    x_cta = monetize_plan.get("x_cta", f"深度版 {TG_PAID_LINK}")
-    bsky_cta = monetize_plan.get("bluesky_cta", f"完整分析 {TG_PAID_LINK}")
-
-    p_threads = f"""你是「暗面筆記」Threads內容AI。
-平台定位：{PLATFORM_DNA['threads']['核心定位']}
-風格：{PLATFORM_DNA['threads']['風格']}
-時段：{ctx}，話題類別：{cat}
-
-第一句（直接用）：{hook}
-核心真相：{truth}
-付費鉤子：{paid_hook}
-變現CTA：{threads_cta}
-Ko-fi：☕ {KOFI_LINK}
-
-結構：爽點開場→痛點發展→真相揭露→鉤子結尾
-規則：每句單獨一行，段落空行，120-150字，繁體中文，不說教
-最後加3個精準hashtag
-只輸出貼文。"""
-
-    p_x = f"""你是「暗面筆記」X/Twitter內容AI。
-平台定位：{PLATFORM_DNA['x_twitter']['核心定位']}
-風格：{PLATFORM_DNA['x_twitter']['風格']}
-話題：{pain.get('scene','')}，類別：{cat}
-真相：{truth}
-CTA：{x_cta}
-
-規則：280字內，第一句必須是反常識犀利觀點
-用數字/數據支撐，讓人想轉發或反駁
-繁體中文，強力有效
-只輸出貼文。"""
-
-    p_bsky = f"""你是「暗面筆記」Bluesky內容AI。
-平台定位：{PLATFORM_DNA['bluesky']['核心定位']}
-風格：{PLATFORM_DNA['bluesky']['風格']}
-話題：{pain.get('scene','')}，類別：{cat}
-真相：{truth}
-CTA：{bsky_cta}
-
-規則：300字內，提出深度洞見，分析性語氣
-批判性思考，有論有據，建立專業信任
-繁體中文
-只輸出貼文。"""
-
-    p_tg_free = f"""你是「暗面筆記」TG免費版AI。
-第一句：{hook}，話題：{pain.get('scene','')}
-
-100字引流預告：前兩句強烈共鳴，「但真相是...」停住
-結尾：完整分析→ {TG_PAID_LINK}
-只輸出內容。"""
-
-    p_tg_paid = f"""你是「暗面筆記」付費深度版AI。
-話題：{pain.get('scene','')}
-真相：{truth}，族群：{pain.get('audience','')}
-
-付費完整版（500字）：
-【開頭】這是公開場合不說的版本
-【現象層】3個具體生活場景（讓人說「就是這樣」）
-【心理層】行為經濟學+心理學雙重分析
-【系統層】為什麼這個現象一直存在（結構性原因）
-【反轉層】大多數人的應對為什麼反而更糟
-【出路層】一個具體可執行的行動
-【本週指令】今天只需做這一件事：
-繁體中文，專業但不學術，像真正懂你的朋友說話。
-只輸出文章。"""
-
-    threads_c, x_c, bsky_c, tg_f, tg_p = await asyncio.gather(
-        call_groq(p_threads, 600),
-        call_groq(p_x, 300),
-        call_gemini(p_bsky, 350),
-        call_openrouter(p_tg_free, 200),
-        call_gemini(p_tg_paid, 700)
-    )
-
+def _threads(text: str) -> bool:
+    if not META_TOKEN or not THREADS_UID:
+        log.warning("⚠️  Threads 未設定"); return False
     try:
-        import urllib.parse
-        img = f"dark cinematic {pain.get('scene','emotional')[:40]}, dark purple black, dramatic, no text, 4k"
-        img_url = "https://image.pollinations.ai/prompt/" + urllib.parse.quote(img) + "?width=1080&height=1080&nologo=true"
-    except: img_url = ""
+        r1 = requests.post(f"https://graph.threads.net/v1.0/{THREADS_UID}/threads",
+            params={"media_type": "TEXT", "text": text, "access_token": META_TOKEN}, timeout=20)
+        if r1.status_code != 200:
+            log.error(f"❌ Threads create: {r1.text[:100]}"); return False
+        time.sleep(4)
+        r2 = requests.post(f"https://graph.threads.net/v1.0/{THREADS_UID}/threads_publish",
+            params={"creation_id": r1.json().get("id"), "access_token": META_TOKEN}, timeout=20)
+        ok = r2.status_code == 200
+        log.info(f"{'✅' if ok else '❌'} Threads"); return ok
+    except Exception as e:
+        log.error(f"❌ Threads: {e}"); return False
 
-    return {
-        "threads": threads_c or hook,
-        "x": x_c or hook,
-        "bluesky": bsky_c or hook,
-        "tg_free": tg_f or hook,
-        "tg_paid": tg_p or truth,
-        "image_url": img_url,
-        "pain": pain,
-        "monetize": monetize_plan
+def _twitter(text: str) -> bool:
+    if not all([TW_KEY, TW_SECRET, TW_AT, TW_AS]):
+        log.warning("⚠️  Twitter 未設定"); return False
+    try:
+        import tweepy
+        c = tweepy.Client(consumer_key=TW_KEY, consumer_secret=TW_SECRET,
+                          access_token=TW_AT, access_token_secret=TW_AS)
+        ok = bool(c.create_tweet(text=text[:270]).data)
+        log.info(f"{'✅' if ok else '❌'} Twitter"); return ok
+    except Exception as e:
+        log.error(f"❌ Twitter: {e}"); return False
+
+def _bluesky(text: str) -> bool:
+    if not BS_PW:
+        log.warning("⚠️  Bluesky 未設定"); return False
+    try:
+        auth = requests.post("https://bsky.social/xrpc/com.atproto.server.createSession",
+            json={"identifier": BS_HANDLE, "password": BS_PW}, timeout=20)
+        if auth.status_code != 200: return False
+        d = auth.json()
+        post = requests.post("https://bsky.social/xrpc/com.atproto.repo.createRecord",
+            headers={"Authorization": f"Bearer {d['accessJwt']}"},
+            json={"repo": d["did"], "collection": "app.bsky.feed.post",
+                  "record": {"$type": "app.bsky.feed.post", "text": text[:295],
+                             "createdAt": datetime.utcnow().isoformat()+"Z"}}, timeout=20)
+        ok = post.status_code == 200
+        log.info(f"{'✅' if ok else '❌'} Bluesky"); return ok
+    except Exception as e:
+        log.error(f"❌ Bluesky: {e}"); return False
+
+def _linkedin(text: str) -> bool:
+    if not LI_TOKEN or not LI_PERSON_ID:
+        log.warning("⚠️  LinkedIn 未設定"); return False
+    try:
+        r = requests.post("https://api.linkedin.com/v2/ugcPosts",
+            headers={"Authorization": f"Bearer {LI_TOKEN}",
+                     "Content-Type": "application/json",
+                     "X-Restli-Protocol-Version": "2.0.0"},
+            json={"author": f"urn:li:person:{LI_PERSON_ID}",
+                  "lifecycleState": "PUBLISHED",
+                  "specificContent": {"com.linkedin.ugc.ShareContent": {
+                      "shareCommentary": {"text": text[:2900]},
+                      "shareMediaCategory": "NONE"}},
+                  "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"}},
+            timeout=20)
+        ok = r.status_code in (200, 201)
+        log.info(f"{'✅' if ok else '❌'} LinkedIn"); return ok
+    except Exception as e:
+        log.error(f"❌ LinkedIn: {e}"); return False
+
+def _yt_community(text: str) -> bool:
+    if not YT_OAUTH:
+        log.warning("⚠️  YouTube OAuth 未設定"); return False
+    try:
+        r = requests.post(
+            "https://www.googleapis.com/youtube/v3/communityPosts?part=snippet",
+            headers={"Authorization": f"Bearer {YT_OAUTH}", "Content-Type": "application/json"},
+            json={"snippet": {"type": "textPost", "textOriginalContent": text[:1000]}}, timeout=20)
+        ok = r.status_code in (200, 201)
+        log.info(f"{'✅' if ok else '❌'} YT Community"); return ok
+    except Exception as e:
+        log.error(f"❌ YT: {e}"); return False
+
+def _save_script(key: str, text: str) -> bool:
+    """腳本存檔並同步到 TG 免費頻道"""
+    fname = f"/tmp/script_{key}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+    try:
+        Path(fname).write_text(text, encoding="utf-8")
+        log.info(f"✅ 腳本存檔：{fname}")
+        _tg(f"📄【{PLATFORM_BASE[key]['name']}腳本】\n\n{text[:400]}...", TG_FREE)
+        return True
+    except Exception as e:
+        log.error(f"❌ 腳本存檔: {e}"); return False
+
+# ── 統一路由 ─────────────────────────────────────────────
+def post(key: str, content: str) -> bool:
+    routes = {
+        "threads"  : _threads,
+        "twitter"  : _twitter,
+        "bluesky"  : _bluesky,
+        "linkedin" : _linkedin,
+        "yt_comm"  : _yt_community,
+        "tg_free"  : lambda t: _tg(t, TG_FREE),
+        "tg_love"  : lambda t: _tg(t, TG_LOVE),
+        "tg_career": lambda t: _tg(t, TG_CAREER),
+        "tg_ai"    : lambda t: _tg(t, TG_AI),
+        "instagram": lambda t: log.info("⚠️  IG 需圖片，腳本已記錄") or _save_script("instagram", t),
+        "tiktok"   : lambda t: _save_script("tiktok", t),
+        "youtube"  : lambda t: _save_script("youtube", t),
+        "pinterest": lambda t: _save_script("pinterest", t),
     }
+    fn = routes.get(key)
+    return fn(content) if fn else False
 
-# ═══ LAYER 5：多平台發布 ═══
-async def publish_all(content):
+# ════════════════════════════════════════════════════════
+# 發文排程（9 時段，覆蓋所有平台）
+# ════════════════════════════════════════════════════════
+SCHEDULE = {
+    "07": ["threads", "tg_free"],
+    "09": ["twitter", "linkedin"],
+    "11": ["instagram", "yt_comm"],
+    "13": ["threads", "bluesky"],
+    "15": ["tg_love", "tg_career", "tg_ai"],
+    "18": ["twitter", "linkedin", "tg_free"],
+    "20": ["tiktok", "youtube"],
+    "21": ["threads", "tg_love"],
+    "23": ["bluesky", "pinterest"],
+}
+
+# ════════════════════════════════════════════════════════
+# 主邏輯
+# ════════════════════════════════════════════════════════
+
+def run_scheduled():
+    hour    = datetime.now().strftime("%H")
+    targets = SCHEDULE.get(hour, [])
+    if not targets:
+        log.info(f"⏰ {hour}:xx 不在排程，跳過")
+        return
+
+    log.info(f"\n{'═'*60}")
+    log.info(f"🚀 {hour}:xx 智能發文 → {', '.join(targets)}")
+    log.info(f"{'═'*60}\n")
+
     results = {}
+    for key in targets:
+        if key not in PLATFORM_BASE:
+            continue
+        enabled_checks = {
+            "tg_career": bool(TG_CAREER),
+            "tg_ai"    : bool(TG_AI),
+            "linkedin" : bool(LI_TOKEN),
+            "yt_comm"  : bool(YT_OAUTH),
+            "pinterest": bool(PIN_TOKEN),
+        }
+        if not enabled_checks.get(key, True):
+            log.info(f"⏭️  [{key}] 環境變數未設定，跳過")
+            continue
 
-    if TG_TOKEN and TG_CHAT:
-        try:
-            msg = f"💡 今日暗面洞察\n\n{content['tg_free']}\n\n━━━━━━━━\n🔒 完整深度分析\n👉 {TG_PAID_LINK}\n☕ {KOFI_LINK}"
-            async with httpx.AsyncClient(timeout=15) as c:
-                r = await c.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                    json={"chat_id": TG_CHAT, "text": msg})
-                results["tg_free"] = r.status_code
-                if content.get("image_url"):
-                    await c.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
-                        json={"chat_id": TG_CHAT, "photo": content["image_url"]})
-                    results["tg_photo"] = 200
-        except Exception as e: results["tg_free"] = str(e)[:20]
+        content, topic = generate(key)
+        if content:
+            results[key] = post(key, content)
+        else:
+            results[key] = False
+        time.sleep(7)
 
-    if TG_TOKEN and TG_PAID:
-        try:
-            async with httpx.AsyncClient(timeout=15) as c:
-                r = await c.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                    json={"chat_id": TG_PAID,
-                        "text": f"🔒【付費專屬·深度版】\n━━━━━━━━\n\n{content['tg_paid']}\n\n━━━━━━━━\n☕ {KOFI_LINK}"})
-                results["tg_paid"] = r.status_code
-        except Exception as e: results["tg_paid"] = str(e)[:20]
+    ok = sum(1 for v in results.values() if v)
+    log.info(f"\n📊 {ok}/{len(results)} 成功 | {datetime.now().strftime('%H:%M')}")
+    for k, v in results.items():
+        log.info(f"  {'✅' if v else '❌'} {k}")
 
-    if ZERNIO_KEY and THREADS_ID:
-        try:
-            async with httpx.AsyncClient(timeout=40) as c:
-                r = await c.post("https://zernio.com/api/v1/posts",
-                    headers={"Authorization": f"Bearer {ZERNIO_KEY}", "Content-Type": "application/json"},
-                    json={"content": content["threads"],
-                        "platforms": [{"platform": "threads", "accountId": THREADS_ID}],
-                        "publishNow": True})
-                results["threads"] = r.status_code
-        except Exception as e: results["threads"] = str(e)[:20]
+def run_all():
+    """強制測試所有可用平台"""
+    log.info("🔄 run_all 模式")
+    for key in PLATFORM_BASE:
+        content, _ = generate(key)
+        if content:
+            post(key, content)
+        time.sleep(8)
 
-    if X_CONSUMER_KEY and X_ACCESS_TOKEN:
-        try:
-            import hmac, hashlib, time, uuid, base64
-            from urllib.parse import quote
-            tweet = content["x"][:280]
-            url = "https://api.twitter.com/2/tweets"
-            ts = str(int(time.time()))
-            nonce = uuid.uuid4().hex
-            params = {"oauth_consumer_key": X_CONSUMER_KEY, "oauth_nonce": nonce,
-                "oauth_signature_method": "HMAC-SHA1", "oauth_timestamp": ts,
-                "oauth_token": X_ACCESS_TOKEN, "oauth_version": "1.0"}
-            base_str = "&".join(["POST", quote(url,safe=""),
-                quote("&".join(f"{k}={quote(str(v),safe='')}" for k,v in sorted(params.items())),safe="")])
-            signing_key = f"{quote(X_CONSUMER_SEC,safe='')}&{quote(X_ACCESS_SEC,safe='')}"
-            sig = hmac.new(signing_key.encode(), base_str.encode(), hashlib.sha1)
-            params["oauth_signature"] = base64.b64encode(sig.digest()).decode()
-            auth = "OAuth " + ", ".join(f'{k}="{quote(str(v),safe="")}"' for k,v in sorted(params.items()) if k.startswith("oauth"))
-            async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(url,
-                    headers={"Authorization": auth, "Content-Type": "application/json"},
-                    json={"text": tweet})
-                results["x"] = r.status_code
-        except Exception as e: results["x"] = str(e)[:20]
+def run_analyze():
+    """僅分析帳號主題，不發文"""
+    log.info("\n📊 帳號主題分析報告")
+    log.info("="*60)
+    for key in ["threads", "twitter", "bluesky", "tg_free"]:
+        s = ai.get_strategy(key)
+        log.info(f"\n[{key}]")
+        log.info(f"  模式    : {s.get('mode')}")
+        log.info(f"  主題    : {s.get('theme')}")
+        log.info(f"  定位    : {s.get('niche')}")
+        log.info(f"  信心度  : {s.get('confidence', 0):.0f}%")
+        log.info(f"  變現    : {s.get('monetization', '')}")
 
-    if BSKY_HANDLE and BSKY_PASSWORD:
-        try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                login = await c.post("https://bsky.social/xrpc/com.atproto.server.createSession",
-                    json={"identifier": BSKY_HANDLE, "password": BSKY_PASSWORD})
-                token = login.json().get("accessJwt","")
-                if token:
-                    r = await c.post("https://bsky.social/xrpc/com.atproto.repo.createRecord",
-                        headers={"Authorization": f"Bearer {token}"},
-                        json={"repo": BSKY_HANDLE, "collection": "app.bsky.feed.post",
-                            "record": {"text": content["bluesky"][:300],
-                                "createdAt": datetime.utcnow().isoformat()+"Z"}})
-                    results["bluesky"] = r.status_code
-        except Exception as e: results["bluesky"] = str(e)[:20]
-
-    STATE["total_cta_count"] += len(results)
-    STATE["revenue_log"].append({
-        "time": datetime.now().strftime("%H:%M"),
-        "topic": content["pain"].get("scene","")[:30],
-        "category": content["pain"].get("category",""),
-        "top_revenue": content["monetize"].get("top_revenue_line",""),
-        "platforms": list(results.keys()),
-        "results": results
-    })
-    if len(STATE["revenue_log"]) > 50:
-        STATE["revenue_log"] = STATE["revenue_log"][-50:]
-    return results
-
-# ═══ 主流程 ═══
-async def full_pipeline():
-    STATE["cycle"] += 1
-    print(f"\n{'='*50}")
-    print(f"🚀 [{datetime.now().strftime('%H:%M')}] 第{STATE['cycle']}輪")
-
-    trends = await scan_market()
-    print(f"📡 掃描到 {len(trends)} 個市場熱點")
-
-    pain = await committee(trends)
-    STATE["gaps"].append(pain)
-    if len(STATE["gaps"]) > 20: STATE["gaps"] = STATE["gaps"][-20:]
-    print(f"🧠 話題：{pain.get('scene','')[:40]}")
-    print(f"📊 類別：{pain.get('category','')} | 變現潛力：{pain.get('monetize_potential','')}")
-
-    monetize_plan = await ai_monetize_selector(pain.get("category",""), pain.get("scene",""))
-    print(f"💰 最高收入線：{monetize_plan.get('top_revenue_line','')}")
-    print(f"💰 原因：{monetize_plan.get('reason','')[:50]}")
-
-    content = await generate_all(pain, monetize_plan)
-    STATE["last_content"] = content["threads"]
-    STATE["last_topic"] = pain.get("scene","")
-    STATE["last_domain"] = pain.get("category","")
-    print("✍️ 多平台內容生成完成")
-
-    results = await publish_all(content)
-    STATE["last_run"] = datetime.now().isoformat()
-    STATE["next_run"] = "4小時後"
-    print(f"✅ 發布結果：{results}")
-
-# ═══ 排程 ═══
-@app.on_event("startup")
-async def startup():
-    print("🔥 暗面筆記 AI變現系統 v6.0 啟動")
-    print("🎯 不限定主題，AI動態判斷最高變現潛力")
-    asyncio.create_task(scheduler())
-
-async def scheduler():
-    await asyncio.sleep(10)
-    while True:
-        try: await full_pipeline()
-        except Exception as e: print(f"錯誤: {e}")
-        await asyncio.sleep(4 * 3600)
-
-class Query(BaseModel):
-    goal: str = ""
-
-@app.post("/run")
-async def run_manual(q: Query, bg: BackgroundTasks):
-    async def custom():
-        trends = await scan_market()
-        pain = await committee(trends)
-        if q.goal and len(q.goal) > 3: pain["scene"] = q.goal
-        monetize_plan = await ai_monetize_selector(pain.get("category",""), pain.get("scene",""))
-        content = await generate_all(pain, monetize_plan)
-        STATE["last_content"] = content["threads"]
-        STATE["last_topic"] = pain["scene"]
-        results = await publish_all(content)
-        STATE["last_run"] = datetime.now().isoformat()
-        print(f"手動完成: {pain['scene'][:30]} | {results}")
-    bg.add_task(custom)
-    return {"msg": "執行中，60秒後查看結果"}
-
-@app.get("/status")
-async def status():
-    return {**STATE, "version": "v6.0",
-        "monetize_weapons": list(MONETIZE_WEAPONS.keys()),
-        "active_platforms": ["threads","telegram","x_twitter","bluesky"]}
-
-@app.get("/revenue")
-async def get_revenue(): return {"revenue_log": STATE["revenue_log"], "total_cta": STATE["total_cta_count"]}
-
-@app.get("/gaps")
-async def get_gaps(): return {"gaps": STATE["gaps"]}
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    logs = STATE.get("revenue_log",[])
-    pstats = {}
-    rstats = {}
-    for log in logs:
-        for p in log.get("platforms",[]): pstats[p] = pstats.get(p,0)+1
-        rv = log.get("top_revenue","")
-        if rv: rstats[rv] = rstats.get(rv,0)+1
-    try:
-        with open("index.html","r",encoding="utf-8") as f: return f.read()
-    except:
-        return f"""<html><body style='background:#0a0a0a;color:#00FFB8;font-family:monospace;padding:30px'>
-<h1>🔥 暗面筆記 v6.0 — 不限定主題，AI動態變現</h1>
-<p>狀態：✅ | 週期：{STATE['cycle']} | CTA觸發：{STATE['total_cta_count']}次</p>
-<p>最後話題：{STATE['last_topic']} [{STATE['last_domain']}]</p>
-<p>最後執行：{STATE['last_run']}</p>
-<hr style='border-color:#222'>
-<h3>📊 平台發布統計</h3>
-{''.join(f'<p>{k}：{v}次</p>' for k,v in pstats.items())}
-<h3>💰 收入線觸發統計</h3>
-{''.join(f'<p>{k}：{v}次</p>' for k,v in rstats.items())}
-<h3>🔧 可用變現武器</h3>
-{''.join(f'<p>• {k}：{v["desc"]}</p>' for k,v in MONETIZE_WEAPONS.items())}
-<hr style='border-color:#222'>
-<p><a href='/revenue' style='color:#FFD700'>收入記錄</a> |
-<a href='/status' style='color:#FFD700'>系統狀態</a></p>
-<p>付費頻道：<a href='{TG_PAID_LINK}' style='color:#FFD700'>{TG_PAID_LINK}</a></p>
-</body></html>"""
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "scheduled"
+    {"all": run_all, "analyze": run_analyze, "scheduled": run_scheduled}.get(cmd, run_scheduled)()
