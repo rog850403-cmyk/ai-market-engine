@@ -813,3 +813,415 @@ if __name__=="__main__":
         state=ls(); mkt=state.get("market",analyze_mkt(collect_mkt()))
         run_task(cmd,mkt)
     else: log.error(f"Unknown: {cmd}")
+
+
+# ===================================================================
+# 爆款公式引擎 v1.0
+# 從 JKL Jemmy「一篇文帶貨400萬」案例學習的核心技術
+# HOOK -> STORY -> OFFER + 反差技巧 + 長文帶貨
+# ===================================================================
+
+VIRAL_PATTERNS = {
+    "hook_story_offer": {
+        "name": "HOOK-STORY-OFFER",
+        "proven": "JKL Jemmy 一篇文帶貨400萬NT$",
+        "structure": [
+            "HOOK: 震撼或反常識的第一句，讓人停下來",
+            "STORY: 有場景有細節有情緒弧線的真實故事，製造反差",
+            "OFFER: 在故事最高點自然帶出產品/頻道/電子書",
+        ],
+        "best_platforms": ["threads", "tg_paid_love", "tg_career", "facebook"],
+        "conversion_rate": "極高（故事讓人信任，信任帶動購買）",
+    },
+    "contrast_reveal": {
+        "name": "反差揭露",
+        "proven": "感覺過時的Office → 原來是要幫我省下",
+        "pattern": "表面X（讀者預期）→ 故事推進 → 原來是Y（意外真相）",
+        "emotion": "認知衝擊 → 好奇 → 恍然大悟 → 信任 → 購買",
+    },
+    "specificity_trust": {
+        "name": "數字真實感",
+        "proven": "7天/400萬/270萬/12年前/美國千美金課程",
+        "principle": "越具體的細節越可信，越可信越容易成交",
+        "examples": ["7天寫完", "12年前學到", "省下這輩子的時間", "差距在百倍以上"],
+    },
+    "sensory_scene": {
+        "name": "感官場景",
+        "proven": "全班同學都傻眼/老師螢幕一直閃/打電動那樣",
+        "principle": "讓讀者在腦海中看到畫面，情緒就自動跟著走",
+    },
+}
+
+
+def gen_viral_longform(platform, niche, topic, paid_product, style="hook_story_offer"):
+    """
+    生成爆款長文（JKL Jemmy 風格）
+    適合 Threads 深度文、TG付費頻道、Facebook 帶貨長文
+    """
+    pattern = VIRAL_PATTERNS.get(style, VIRAL_PATTERNS["hook_story_offer"])
+    imp = impulse(platform, niche, topic, paid_product)
+
+    prompt = (
+        f"你是「暗面筆記」的頂尖帶貨文案師，模仿 JKL Jemmy 一篇文帶貨400萬NT$的風格。"
+        f"\n\n核心公式：HOOK -> STORY -> OFFER"
+        f"\n\n【話題】{topic}"
+        f"\n【利基】{niche}"
+        f"\n【目標產品】{paid_product}"
+        f"\n【購買觸發】{imp.get('primary_trigger', '')}"
+        f"\n\n結構要求："
+        f"\n[HOOK] 第一句讓人停下來，震撼或反常識（15字內）"
+        f"\n[SCENE] 用第一人稱描述一個真實場景，有時間/地點/細節（越具體越好）"
+        f"\n[CONTRAST] 製造反差：表面是A，結果發現是B（讓讀者說「哇原來如此」）"
+        f"\n[BUILD] 故事推進，情緒升溫，讓讀者感受到你的體驗"
+        f"\n[INSIGHT] 點出讀者也有的痛點，用「你是不是也...」說中他們"
+        f"\n[OFFER] 在故事最高點自然引出：{paid_product}（不要突然變廣告腔）"
+        f"\n\n寫作技巧（從JKL Jemmy學到的）："
+        f"\n- 用具體數字增加可信度（幾年前、幾天、多少錢）"
+        f"\n- 感官細節讓讀者看到畫面（全班傻眼、螢幕一直閃）"
+        f"\n- 短句製造節奏感，長短交替"
+        f"\n- 結尾一句話讓人想分享（讓他們感覺「這說的就是我」）"
+        f"\n\n字數：200-400字，繁體中文，100%真人感"
+        f"\n只輸出正文。"
+    )
+
+    result = _g(prompt, tok=1000, t=0.88)
+    if not result:
+        result = _gm(prompt, tok=1000)
+    return result.strip() if result else ""
+
+
+def gen_contrast_hook(niche, topic):
+    """
+    生成反差型鉤子（最強的第一句話類型之一）
+    例：感覺過時的Excel → 原來是最強武器
+    """
+    prompt = (
+        f"為「{niche}」話題「{topic}」生成3個「反差型」開場鉤子。"
+        f"\n格式：表面上[A]，但其實[B意外的真相]"
+        f"\n例：感覺在感情上很強的人，往往是最怕被看穿的人"
+        f"\n例：他說不在乎，但他記得你說過的每一件事"
+        f"\n輸出3個，每個一行，繁體中文，15字內。"
+    )
+    result = _g(prompt, tok=200, t=0.90)
+    if not result:
+        return f"你以為{topic}，但真正的原因從來不是這個"
+    lines = [l.strip() for l in result.split("\n") if l.strip()]
+    return lines[0] if lines else result.strip()
+
+
+def gen_story_scene(niche, topic, pain):
+    """
+    生成有場景感的故事開頭（JKL Jemmy 式真實感）
+    """
+    prompt = (
+        f"為「{niche}」的「{topic}」寫一個有場景感的故事開頭。"
+        f"\n深層痛點：{pain.get('deep_pain', '')}"
+        f"\n格式：第一人稱，有時間/地點/具體細節，50-80字"
+        f"\n讓讀者覺得「這說的是真實發生的事」"
+        f"\n只輸出故事片段，繁體中文。"
+    )
+    result = _g(prompt, tok=300, t=0.88)
+    return result.strip() if result else ""
+
+
+# 在任務執行器中加入爆款長文選項
+def gen_viral_for_task(platform, niche, topic, paid_product):
+    """
+    根據平台決定是否使用爆款長文格式
+    - TG付費頻道 + Threads深度文 → HOOK-STORY-OFFER 長文
+    - 其他平台 → 原有流程
+    """
+    LONGFORM_PLATFORMS = {"tg_paid_love", "tg_career", "tg_ai_ch"}
+    DEEP_THREADS_HOUR = {9, 13, 21}  # 這幾個時段的 Threads 用長文
+    
+    hour_now = datetime.utcnow().hour
+    tw_hour = (hour_now + 8) % 24
+    
+    if platform in LONGFORM_PLATFORMS or (platform == "threads" and tw_hour in DEEP_THREADS_HOUR):
+        log.info(f"[{platform}] 使用爆款長文格式（HOOK-STORY-OFFER）")
+        result = gen_viral_longform(platform, niche, topic, paid_product)
+        if result and len(result) > 80:
+            return result
+    
+    return None  # 回傳 None 表示使用原有流程
+
+
+# ====================================================================
+# MISSING MODULES v1.0 - Multi-AI Gap Analysis Results
+# 5 dimensions: Tech / Monetize / Content / AI Models / Platforms
+# ====================================================================
+
+import hashlib, sqlite3
+from datetime import timedelta
+
+DB_PATH = "/tmp/shadownotes.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""CREATE TABLE IF NOT EXISTS published (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT, platform TEXT, niche TEXT, topic TEXT,
+        content_hash TEXT, score INTEGER, views INTEGER DEFAULT 0,
+        likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0
+    )""")
+    conn.commit(); conn.close()
+
+try:
+    init_db()
+except: pass
+
+def is_duplicate(topic, platform, threshold=0.82):
+    """Prevent re-publishing same topic within 7 days"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        recent = conn.execute(
+            "SELECT topic FROM published WHERE platform=? AND ts > datetime('now','-7 days')",
+            (platform,)).fetchall()
+        conn.close()
+        for rt in [r[0] for r in recent]:
+            common = len(set(topic) & set(rt))
+            sim = common / max(len(set(topic)), len(set(rt)), 1)
+            if sim > threshold:
+                return True
+        return False
+    except: return False
+
+def record_published(platform, niche, topic, content, score):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        h = hashlib.md5(content[:200].encode()).hexdigest()
+        conn.execute(
+            "INSERT INTO published (ts,platform,niche,topic,content_hash,score) VALUES (datetime('now'),?,?,?,?,?)",
+            (platform, niche, topic, h, score))
+        conn.commit(); conn.close()
+    except: pass
+
+def check_token_health():
+    """Alert when tokens approaching expiry"""
+    alerts = []
+    token_log = Path("/tmp/token_dates.json")
+    if token_log.exists():
+        try:
+            dates = json.loads(token_log.read_text())
+            for platform, created_str in dates.items():
+                created = datetime.fromisoformat(created_str)
+                days_old = (datetime.now() - created).days
+                if platform == "threads" and days_old >= 50:
+                    alerts.append(f"Threads Token is {days_old} days old - update within 10 days (60 day limit)")
+        except: pass
+    for alert in alerts:
+        notify(f"Token Warning: {alert}", urgent=True)
+    return alerts
+
+def pub_with_retry(pub_func, *args, max_retries=3, wait_sec=180):
+    """Auto-retry failed publishes"""
+    for attempt in range(max_retries):
+        try:
+            if pub_func(*args): return True
+        except Exception as e:
+            log.warning(f"Attempt {attempt+1}/{max_retries} failed: {e}")
+        if attempt < max_retries - 1:
+            time.sleep(wait_sec)
+    notify(f"Publish failed after {max_retries} retries: {pub_func.__name__}", urgent=True)
+    return False
+
+_hashtag_cache = {}
+
+def get_hashtags(platform, niche, topic):
+    """Optimized hashtags per platform"""
+    key = f"{platform}_{niche}_{date.today()}"
+    if key in _hashtag_cache: return _hashtag_cache[key]
+    base = {
+        "threads"          : "#感情心理 #暗面筆記 #人性觀察 #感情分析 #關係心理",
+        "instagram"        : "#感情心理 #暗面筆記 #感情語錄 #心理學 #人際關係 #愛情心理 #感情分析 #台灣 #戀愛 #人性",
+        "instagram_reels"  : "#感情心理 #暗面筆記 #感情 #戀愛 #心理 #人際關係 #Reels #台灣",
+        "tiktok"           : "#感情心理 #暗面筆記 #感情 #心理 #戀愛 #人際關係 #Taiwan #fyp #foryou",
+        "twitter"          : "#職場 #人性 #暗面筆記 #台灣 #心理學",
+        "bluesky"          : "#AI #工具 #效率 #暗面筆記 #台灣",
+        "youtube_shorts"   : "#感情心理 #暗面筆記 #Shorts #心理學 #AI工具",
+        "youtube_long"     : "#財務心理 #暗面筆記 #心理學 #財務自由 #台灣",
+    }
+    tags = base.get(platform, "#暗面筆記 #感情心理")
+    _hashtag_cache[key] = tags
+    return tags
+
+def auto_reply_comments():
+    """Auto-reply Threads comments to boost algorithm reach"""
+    if not MT or not THREADS_UID: return
+    try:
+        r = requests.get(f"https://graph.threads.net/v1.0/{THREADS_UID}/threads",
+            params={"fields":"id,text,timestamp","limit":5,"access_token":MT}, timeout=15)
+        if r.status_code != 200: return
+        for post in r.json().get("data", [])[:3]:
+            cr = requests.get(f"https://graph.threads.net/v1.0/{post['id']}/replies",
+                params={"fields":"id,text,username","limit":8,"access_token":MT}, timeout=10)
+            if cr.status_code != 200: continue
+            for comment in cr.json().get("data", [])[:4]:
+                ctext = comment.get("text","")
+                if len(ctext) < 3: continue
+                user = comment.get("username","")
+                rp = (
+                    f"Reply to {user}'s comment about relationship psychology for Shadow Notes account. "
+                    f"Comment: {ctext}. "
+                    "Requirements: genuine/warm/under 30 Traditional Chinese chars. "
+                    "Output only the reply."
+                )
+                reply = _g(rp, tok=80, t=0.82)
+                if reply:
+                    requests.post(f"https://graph.threads.net/v1.0/{comment['id']}/replies",
+                        params={"text":reply[:400],"access_token":MT}, timeout=10)
+                    time.sleep(3)
+        log.info("Auto-reply done")
+    except Exception as e: log.warning(f"Auto-reply: {e}")
+
+def gen_ig_image(topic, niche):
+    """Generate IG image via DALL-E 3, fallback to default"""
+    OPENAI_KEY = E("OPENAI_API_KEY")
+    if not OPENAI_KEY: return IGIMG or ""
+    try:
+        prompt_text = (
+            f"Minimalist dark background social media image for Taiwan relationship psychology account Shadow Notes. "
+            f"Theme: {topic[:50]}. Style: dark navy background, gold accent elements, "
+            f"elegant abstract design, no faces or text, premium aesthetic. Square 1:1."
+        )
+        r = requests.post("https://api.openai.com/v1/images/generations",
+            headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
+            json={"model":"dall-e-3","prompt":prompt_text,"size":"1024x1024","quality":"standard","n":1},
+            timeout=60)
+        if r.status_code == 200:
+            url = r.json()["data"][0]["url"]
+            log.info("DALL-E 3 image generated")
+            return url
+    except Exception as e: log.warning(f"Image gen: {e}")
+    return IGIMG or ""
+
+def pub_facebook(text, image_url=""):
+    """Facebook Page auto-publish"""
+    FB_PAGE_ID    = E("FB_PAGE_ID")
+    FB_PAGE_TOKEN = E("FB_PAGE_TOKEN") or MT
+    if not FB_PAGE_ID: return False
+    try:
+        if image_url:
+            r = requests.post(f"https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos",
+                params={"url":image_url,"caption":text[:2000],"access_token":FB_PAGE_TOKEN}, timeout=20)
+        else:
+            r = requests.post(f"https://graph.facebook.com/v19.0/{FB_PAGE_ID}/feed",
+                params={"message":text[:2000],"access_token":FB_PAGE_TOKEN}, timeout=20)
+        ok = r.status_code == 200
+        log.info(f"Facebook: {'ok' if ok else 'fail'}"); return ok
+    except Exception as e: log.error(f"FB: {e}"); return False
+
+def pub_line_oa(text):
+    """LINE Broadcast - Taiwan largest messaging platform"""
+    LINE_TOKEN = E("LINE_CHANNEL_ACCESS_TOKEN")
+    if not LINE_TOKEN: return False
+    try:
+        r = requests.post("https://api.line.me/v2/bot/message/broadcast",
+            headers={"Authorization":f"Bearer {LINE_TOKEN}","Content-Type":"application/json"},
+            json={"messages":[{"type":"text","text":text[:5000]}]}, timeout=20)
+        ok = r.status_code == 200
+        log.info(f"LINE OA: {'ok' if ok else 'fail'}"); return ok
+    except Exception as e: log.error(f"LINE: {e}"); return False
+
+def monitor_viral_posts():
+    """Find best performing posts and generate extension topics"""
+    if not MT or not THREADS_UID: return []
+    try:
+        r = requests.get(f"https://graph.threads.net/v1.0/{THREADS_UID}/threads",
+            params={"fields":"id,text,likes_count,replies_count","limit":20,"access_token":MT}, timeout=15)
+        if r.status_code != 200: return []
+        posts = r.json().get("data", [])
+        if not posts: return []
+        best = max(posts, key=lambda p: p.get("likes_count",0) + p.get("replies_count",0)*2)
+        best_eng = best.get("likes_count",0) + best.get("replies_count",0)
+        if best_eng < 8: return []
+        best_text = best.get("text","")[:180]
+        prompt = (
+            f"This relationship psychology post has high engagement: {best_text}. "
+            "Analyze why it went viral and generate 10 related but different angle follow-up topics. "
+            "Each under 15 Traditional Chinese chars, output as list only."
+        )
+        result = _g(prompt, tok=350, t=0.88)
+        if result:
+            topics = [l.strip() for l in result.split("\n") if l.strip() and len(l.strip()) > 3][:10]
+            if topics:
+                notify(f"Viral post found! Engagement:{best_eng}\nGenerated {len(topics)} extension topics\nTop: {topics[0]}")
+            return topics
+    except Exception as e: log.warning(f"Viral monitor: {e}")
+    return []
+
+TAIWAN_EVENTS = {
+    "02-14": ("Valentine's Day",    "High demand for relationship content - maximize love posts"),
+    "07-07": ("Qixi Festival",      "Taiwan Qixi - relationship content peak season"),
+    "05-11": ("Mother's Day",       "Family relationships/origin family psychology"),
+    "01-01": ("New Year",           "New year new relationship/post-breakup healing"),
+    "12-25": ("Christmas",          "Solo blues/long distance love/year-end reflection"),
+    "11-11": ("Singles Day",        "Single economy/relationship gaps/self-love"),
+    "03-08": ("Women's Day",        "Female independence/self in relationships"),
+    "05-01": ("Labor Day",          "Work-life-love balance/career fatigue and relationships"),
+}
+
+def get_event_context():
+    today = datetime.now().strftime("%m-%d")
+    if today in TAIWAN_EVENTS:
+        event, ctx = TAIWAN_EVENTS[today]
+        return f"Today is {event}: {ctx}"
+    for days_ahead in range(1, 8):
+        future = (datetime.now() + timedelta(days=days_ahead)).strftime("%m-%d")
+        if future in TAIWAN_EVENTS:
+            event, ctx = TAIWAN_EVENTS[future]
+            return f"{days_ahead} days to {event} - start warming up: {ctx}"
+    return ""
+
+def gen_viral_longform(platform, niche, topic, paid_product, style="hook_story_offer"):
+    """
+    JKL Jemmy style HOOK-STORY-OFFER long-form content
+    Proven: one post can generate NT$4M in sales
+    """
+    imp = impulse(platform, niche, topic, paid_product)
+    event_ctx = get_event_context()
+
+    prompt = (
+        "You are Shadow Notes top conversion copywriter. Use JKL Jemmy HOOK-STORY-OFFER formula. "
+        f"Topic: {topic}. Niche: {niche}. Target: {paid_product}. "
+        f"Purchase trigger: {imp.get('primary_trigger','')}. "
+        + (f"Special context: {event_ctx}. " if event_ctx else "")
+        + "Structure: "
+        "[HOOK] First sentence stops reader - shocking or counter-intuitive (15 chars max) "
+        "[SCENE] First-person story with specific time/place/details - more specific = more credible "
+        "[CONTRAST] Surface seems like A, reality reveals B - cognitive surprise moment "
+        "[BUILD] Story escalates, emotion intensifies "
+        "[INSIGHT] Point out reader's pain using 'you also...' to create mirror effect "
+        "[OFFER] At story peak, naturally introduce the paid product - NOT salesy "
+        "Techniques: specific numbers, sensory details, short punchy sentences, "
+        "ending line makes people want to share. "
+        f"Length: 200-400 Traditional Chinese chars. "
+        "Output content only."
+    )
+    result = _g(prompt, tok=950, t=0.88) or _gm(prompt, tok=950)
+    return result.strip() if result else ""
+
+def gen_contrast_hook(niche, topic):
+    """Generate contrast-type hooks (strongest first-sentence pattern)"""
+    prompt = (
+        f"Generate 3 contrast hooks for {niche} topic: {topic}. "
+        "Pattern: Seems like [A], but actually [B unexpected truth]. "
+        "Example: The person who seems strongest in love is actually most afraid of being seen through. "
+        "Output 3 hooks, one per line, Traditional Chinese, max 18 chars each."
+    )
+    result = _g(prompt, tok=180, t=0.90)
+    if not result:
+        return f"You think {topic[:10]} but the real reason is never this"
+    lines = [l.strip() for l in result.split("\n") if l.strip()]
+    return lines[0] if lines else result.strip()
+
+def run_daily_maintenance():
+    """Daily maintenance tasks (runs at Taiwan 07:00)"""
+    log.info("Daily maintenance starting")
+    check_token_health()
+    viral_topics = monitor_viral_posts()
+    auto_reply_comments()
+    event = get_event_context()
+    if event:
+        notify(f"Event reminder: {event}")
+    log.info("Daily maintenance done")
