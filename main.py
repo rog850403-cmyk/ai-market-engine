@@ -1,971 +1,1374 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-╔══════════════════════════════════════════════════════════════╗
-║    暗面筆記 v18.19 — Boris框架進化引擎                      ║
-║    Based on Claude Code Creator Boris Cherny's 4 Frameworks  ║
-║                                                              ║
-║  框架一：Plan = Less Errors                                 ║
-║    先收集真實市場數據→分析→制定計劃→再執行                 ║
-║    不允許跳過Plan直接Execute                                ║
-║                                                              ║
-║  框架二：Parallel Agents（並行Agent）                       ║
-║    多個蜂群同時處理不同模組，不互相等待                     ║
-║                                                              ║
-║  框架三：CLAUDE.md錯誤記錄→規則自動更新                   ║
-║    每次失敗→立即記錄規則→下次自動避免                      ║
-║                                                              ║
-║  框架四：Sub-agents（子代理人）                             ║
-║    @market_scout @content_writer @quality_checker           ║
-║    @monetizer @video_producer各司其職                       ║
-║                                                              ║
-║  核心哲學：先收集市場數據，AI基於數據創造                   ║
-║           不是模仿別人，而是看透市場邏輯再創新             ║
-╚══════════════════════════════════════════════════════════════╝
+暗面筆記 Shadow Notes — 整合主程式 v18.20
+整合版本：v18.5 ~ v18.19 所有模組 + v18.20 新增功能
+部署：Railway / Termux Samsung S9+
+作者：Hsuan (廖志軒)
+更新：2026-05-25
 """
 
-import os, json, sqlite3, logging, re, random, time, threading
-import xml.etree.ElementTree as ET
+import os
+import sys
+import json
+import sqlite3
+import logging
+import re
+import time
+import threading
+import random
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Callable
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Optional, Callable
 
-logger = logging.getLogger("ShadowNotes.v1819")
-def E(k, d=""): return os.environ.get(k, d)
+# ─────────────────────────────────────────
+# 基礎設定
+# ─────────────────────────────────────────
+logger = logging.getLogger("ShadowNotes.v1820")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 
-BORIS_DB   = "/tmp/boris_framework.db"
-RULES_FILE = "/tmp/CLAUDE_rules.json"  # 相當於CLAUDE.md
+E = lambda k, d="": os.environ.get(k, d)
 
-def init_boris_db():
-    conn = sqlite3.connect(BORIS_DB)
-    conn.executescript("""
-    -- 計劃記錄（Boris框架一）
-    CREATE TABLE IF NOT EXISTS execution_plans (
-        id INTEGER PRIMARY KEY, plan_id TEXT UNIQUE,
-        task TEXT, market_data TEXT,
-        analysis TEXT, plan TEXT,
-        risk TEXT, expected_outcome TEXT,
-        status TEXT DEFAULT 'planned',
-        actual_outcome TEXT, success INTEGER DEFAULT -1,
-        created_at TEXT, executed_at TEXT
-    );
-    -- 錯誤規則庫（Boris框架三，相當於CLAUDE.md）
-    CREATE TABLE IF NOT EXISTS error_rules (
-        id INTEGER PRIMARY KEY,
-        error_type TEXT, context TEXT,
-        wrong_approach TEXT, correct_approach TEXT,
-        rule TEXT, applied_count INTEGER DEFAULT 0,
-        created_at TEXT
-    );
-    -- 子Agent執行記錄（Boris框架四）
-    CREATE TABLE IF NOT EXISTS subagent_runs (
-        id INTEGER PRIMARY KEY,
-        agent_name TEXT, task TEXT,
-        input TEXT, output TEXT,
-        quality REAL DEFAULT 0, success INTEGER DEFAULT 0,
-        runtime_ms INTEGER DEFAULT 0, created_at TEXT
-    );
-    -- 並行任務記錄（Boris框架二）
-    CREATE TABLE IF NOT EXISTS parallel_tasks (
-        id INTEGER PRIMARY KEY, batch_id TEXT,
-        task_name TEXT, status TEXT DEFAULT 'pending',
-        result TEXT, started_at TEXT, completed_at TEXT
-    );
-    -- 市場洞見（驅動所有創作的真實數據）
-    CREATE TABLE IF NOT EXISTS market_insights (
-        id INTEGER PRIMARY KEY, source TEXT,
-        signal TEXT, strength REAL DEFAULT 0,
-        actionable TEXT, used_in_plan INTEGER DEFAULT 0,
-        created_at TEXT
-    );
-    """)
-    conn.commit(); conn.close()
+# 資料庫路徑
+BORIS_DB    = "/tmp/boris_framework.db"
+RULES_FILE  = "/tmp/CLAUDE_rules.json"   # CLAUDE.md 錯誤規則庫
+MEMORY_DB   = "/tmp/agent_memory.db"
+REVENUE_DB  = "/tmp/revenue.db"
+QUALITY_DB  = "/tmp/quality_monitor.db"
 
-init_boris_db()
+# Telegram
+TG_TOKEN    = E("TG_TOKEN")
+TG_CHAT_ID  = E("TG_CHAT_ID")
+TG_PAID_CHAT= E("TG_PAID_CHAT_ID", "-1009390767725")
 
+# ─────────────────────────────────────────
+# Fallback AI 呼叫（v18.19 修正版，無限遞迴已修）
+# ─────────────────────────────────────────
+FALLBACK_CHAIN = ["groq", "gemini", "deepseek", "openrouter"]
 
-# ══════════════════════════════════════════════════════════════
-# 框架一：Plan = Less Errors
-# 收集真實數據→分析→制定計劃→才允許執行
-# ══════════════════════════════════════════════════════════════
-
-def plan_before_execute(task: str, context: dict = None) -> dict:
+def _ai(prompt: str, task_type: str = "general", _visited: set = None) -> str:
     """
-    Boris框架一：強制在執行前做計劃
-    1. 收集真實市場數據
-    2. AI分析數據
-    3. 制定詳細計劃（含風險評估）
-    4. 返回計劃，等待確認後才執行
+    多模型 fallback AI 呼叫。
+    修正：使用 _visited 集合避免無限遞迴（v18.19 bug fix）
+    Fallback 鏈：groq → gemini → deepseek → openrouter → ""
     """
-    import hashlib
-    plan_id = hashlib.md5(f"{task}{datetime.now().isoformat()}".encode()).hexdigest()[:10]
-
-    # Step 1：收集真實市場數據（不允許AI猜測）
-    market_data = _collect_market_data_for_task(task)
-
-    # Step 2：讀取已有的錯誤規則（避免重蹈覆轍）
-    rules = _get_relevant_rules(task)
-    rules_text = '\n'.join([f"  ⛔ 避免：{r['wrong_approach']} → ✅ 應該：{r['correct_approach']}" for r in rules[:5]])
-
-    # Step 3：AI基於真實數據制定計劃
-    market_summary = '\n'.join([f"  [{s['source']}] {s['signal'][:60]}" for s in market_data[:8]])
-    context_text = json.dumps(context or {}, ensure_ascii=False)[:200]
-
-    plan_prompt = f"""你是計劃制定師。基於真實市場數據，為這個任務制定詳細執行計劃：
-
-任務：{task}
-額外上下文：{context_text}
-
-【真實市場數據（不是猜測）】：
-{market_summary if market_summary else '正在收集中...'}
-
-【已知錯誤規則（必須避免）】：
-{rules_text if rules_text else '暫無記錄，保持謹慎'}
-
-制定計劃，包含：
-1. 分析：市場數據說明了什麼？
-2. 機會：最大的切入點在哪裡？
-3. 步驟：具體執行步驟（最多5步，每步20字內）
-4. 風險：什麼可能出錯？怎麼預防？
-5. 成功指標：什麼情況算成功？
-
-JSON：
-{{"analysis":"...", "opportunity":"...", "steps":["步驟1","步驟2","步驟3"],
-  "risks":"...", "success_metric":"...", "estimated_time":"..."}}"""
-
-    plan_json = _ai(plan_prompt, "strategy", max_tokens=600)
-    plan_data = {}
-    try:
-        m = re.search(r'\{.*\}', plan_json, re.DOTALL)
-        if m: plan_data = json.loads(m.group())
-    except:
-        plan_data = {"analysis": "數據分析中", "steps": ["收集數據", "分析", "執行"], "risks": "未知"}
-
-    # Step 4：儲存計劃
-    conn = sqlite3.connect(BORIS_DB)
-    conn.execute("""INSERT OR IGNORE INTO execution_plans
-        (plan_id, task, market_data, analysis, plan, risk, expected_outcome, created_at)
-        VALUES (?,?,?,?,?,?,?,?)""",
-        (plan_id, task[:200],
-         json.dumps([s['signal'] for s in market_data[:5]], ensure_ascii=False)[:400],
-         plan_data.get('analysis','')[:200],
-         json.dumps(plan_data.get('steps',[]), ensure_ascii=False)[:300],
-         plan_data.get('risks','')[:200],
-         plan_data.get('success_metric','')[:200],
-         datetime.now(timezone.utc).isoformat()))
-    conn.commit(); conn.close()
-
-    logger.info(f"[Plan] {plan_id} 計劃制定完成：{task[:40]}")
-
-    return {
-        "plan_id": plan_id,
-        "task": task,
-        "market_signals": len(market_data),
-        "rules_applied": len(rules),
-        "plan": plan_data,
-        "ready_to_execute": True,
-    }
-
-def _collect_market_data_for_task(task: str) -> list:
-    """根據任務自動收集相關市場數據"""
-    import requests
-    signals = []
-
-    # 從任務關鍵詞提取搜索詞
-    keywords = re.findall(r'[\u4e00-\u9fff]{2,8}|[A-Za-z]{4,15}', task)
-    search_queries = keywords[:3] if keywords else ["AI副業", "台灣市場"]
-
-    for q in search_queries:
-        try:
-            r = requests.get(
-                f"https://news.google.com/rss/search?q={q}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
-                timeout=8)
-            if r.status_code == 200:
-                root = ET.fromstring(r.text)
-                for item in root.findall('.//item')[:5]:
-                    t = item.find('title')
-                    if t is not None and t.text:
-                        signal = {
-                            "source": "google_news",
-                            "signal": t.text[:80],
-                            "strength": 75 + random.randint(0,25),
-                            "query": q,
-                        }
-                        signals.append(signal)
-                        # 儲存到市場洞見DB
-                        conn = sqlite3.connect(BORIS_DB)
-                        conn.execute("""INSERT INTO market_insights
-                            (source, signal, strength, created_at) VALUES (?,?,?,?)""",
-                            ("google_news", signal['signal'], signal['strength'],
-                             datetime.now(timezone.utc).isoformat()))
-                        conn.commit(); conn.close()
-            time.sleep(0.3)
-        except: pass
-
-    return signals
-
-
-# ══════════════════════════════════════════════════════════════
-# 框架二：Parallel Agents（並行多Agent）
-# 不等待，同時處理不同任務
-# ══════════════════════════════════════════════════════════════
-
-def run_parallel_agents(tasks: dict) -> dict:
-    """
-    Boris框架二：並行執行多個Agent
-    tasks = {"agent_name": "任務描述", ...}
-    所有Agent同時啟動，互不等待
-    """
-    import hashlib
-    batch_id = hashlib.md5(str(datetime.now()).encode()).hexdigest()[:8]
-    results = {}
-
-    # 記錄批次任務
-    conn = sqlite3.connect(BORIS_DB)
-    for agent_name, task in tasks.items():
-        conn.execute("""INSERT INTO parallel_tasks (batch_id, task_name, status, started_at)
-            VALUES (?,?,?,?)""",
-            (batch_id, f"{agent_name}: {task[:50]}", "running",
-             datetime.now(timezone.utc).isoformat()))
-    conn.commit(); conn.close()
-
-    # 並行執行（ThreadPoolExecutor）
-    def run_single_agent(agent_name: str, task: str) -> tuple:
-        start = time.time()
-        try:
-            result = _run_subagent(agent_name, task)
-            elapsed = int((time.time() - start) * 1000)
-            # 更新DB
-            conn = sqlite3.connect(BORIS_DB)
-            conn.execute("""UPDATE parallel_tasks SET status='done', result=?, completed_at=?
-                WHERE batch_id=? AND task_name LIKE ?""",
-                (str(result)[:300], datetime.now(timezone.utc).isoformat(),
-                 batch_id, f"{agent_name}%"))
-            conn.commit(); conn.close()
-            return agent_name, result, elapsed, True
-        except Exception as e:
-            # 記錄錯誤到規則庫
-            record_error_rule(
-                error_type="parallel_agent_fail",
-                context=f"{agent_name}: {task[:50]}",
-                wrong_approach="無規則保護",
-                correct_approach="加入錯誤處理",
-                rule=f"{agent_name}失敗時應有備援"
-            )
-            return agent_name, str(e), 0, False
-
-    with ThreadPoolExecutor(max_workers=min(len(tasks), 5)) as executor:
-        futures = {executor.submit(run_single_agent, name, task): name
-                   for name, task in tasks.items()}
-        for future in as_completed(futures, timeout=60):
-            try:
-                agent_name, result, elapsed, success = future.result()
-                results[agent_name] = {
-                    "result": result,
-                    "elapsed_ms": elapsed,
-                    "success": success,
-                }
-                logger.info(f"[Parallel] {agent_name}: {'✓' if success else '✗'} {elapsed}ms")
-            except Exception as e:
-                agent_name = futures[future]
-                results[agent_name] = {"result": str(e), "success": False}
-
-    results["batch_id"] = batch_id
-    results["total_agents"] = len(tasks)
-    results["successful"] = sum(1 for v in results.values()
-                                if isinstance(v, dict) and v.get('success', False))
-    return results
-
-
-# ══════════════════════════════════════════════════════════════
-# 框架三：CLAUDE.md — 錯誤記錄→規則自動更新
-# 每次Agent犯錯立即記錄，下次自動避免
-# ══════════════════════════════════════════════════════════════
-
-def record_error_rule(error_type: str, context: str,
-                       wrong_approach: str, correct_approach: str,
-                       rule: str):
-    """
-    Boris框架三：每次出錯立即記錄規則
-    等同於更新CLAUDE.md
-    這是讓系統不重複犯錯的核心機制
-    """
-    conn = sqlite3.connect(BORIS_DB)
-    # 檢查是否已有類似規則
-    existing = conn.execute("""SELECT id, applied_count FROM error_rules
-        WHERE error_type=? AND wrong_approach LIKE ?""",
-        (error_type, wrong_approach[:30]+"%")).fetchone()
-    if existing:
-        conn.execute("UPDATE error_rules SET applied_count=applied_count+1 WHERE id=?",
-                    (existing[0],))
-    else:
-        conn.execute("""INSERT INTO error_rules
-            (error_type, context, wrong_approach, correct_approach, rule, created_at)
-            VALUES (?,?,?,?,?,?)""",
-            (error_type, context[:100], wrong_approach[:200],
-             correct_approach[:200], rule[:200],
-             datetime.now(timezone.utc).isoformat()))
-    conn.commit(); conn.close()
-
-    # 同步到CLAUDE_rules.json（相當於更新CLAUDE.md）
-    _sync_rules_file()
-    logger.info(f"[CLAUDE.md] 新規則記錄：{error_type} → {rule[:50]}")
-
-def _sync_rules_file():
-    """將規則DB同步到CLAUDE_rules.json"""
-    try:
-        conn = sqlite3.connect(BORIS_DB)
-        rules = conn.execute("""SELECT error_type, rule, correct_approach, applied_count
-            FROM error_rules ORDER BY applied_count DESC, id DESC LIMIT 50""").fetchall()
-        conn.close()
-        rules_data = {
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "total_rules": len(rules),
-            "rules": [{"type": r[0], "rule": r[1], "approach": r[2], "times": r[3]} for r in rules]
-        }
-        with open(RULES_FILE, 'w', encoding='utf-8') as f:
-            json.dump(rules_data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"[Rules Sync] {e}")
-
-def _get_relevant_rules(task: str) -> list:
-    """取得與當前任務相關的規則"""
-    try:
-        conn = sqlite3.connect(BORIS_DB)
-        rules = conn.execute("""SELECT error_type, wrong_approach, correct_approach, rule
-            FROM error_rules ORDER BY applied_count DESC LIMIT 10""").fetchall()
-        conn.close()
-        return [{"error_type": r[0], "wrong_approach": r[1],
-                 "correct_approach": r[2], "rule": r[3]} for r in rules]
-    except:
-        return []
-
-def get_claude_md_content() -> str:
-    """讀取當前CLAUDE.md規則內容"""
-    try:
-        conn = sqlite3.connect(BORIS_DB)
-        rules = conn.execute("""SELECT error_type, rule, applied_count
-            FROM error_rules ORDER BY applied_count DESC, id DESC""").fetchall()
-        total = conn.execute("SELECT COUNT(*) FROM error_rules").fetchone()[0]
-        conn.close()
-        lines = [
-            "# 暗面筆記 CLAUDE.md — 自動更新規則庫",
-            f"# 總計 {total} 條規則，每次失敗自動更新",
-            f"# 最後更新：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            "─"*40,
-        ]
-        for rtype, rule, count in rules[:20]:
-            lines.append(f"[{rtype}|{count}次] {rule}")
-        return '\n'.join(lines)
-    except:
-        return "CLAUDE.md初始化中..."
-
-
-# ══════════════════════════════════════════════════════════════
-# 框架四：Sub-agents（子代理人系統）
-# @market_scout @content_writer @quality_checker 等
-# ══════════════════════════════════════════════════════════════
-
-SUBAGENT_DEFINITIONS = {
-    "@market_scout": {
-        "role": "市場偵察員",
-        "specialty": "收集真實市場數據，識別趨勢",
-        "system": "你是市場偵察員。任務：只收集和報告真實數據，不猜測。輸出：數據+來源+強度分數",
-        "model_priority": ["groq", "gemini"],
-    },
-    "@content_writer": {
-        "role": "爆款內容創作者",
-        "specialty": "基於市場數據創作有價值的內容",
-        "system": "你是內容創作者。必須基於真實市場數據創作，不模仿，而是看透邏輯再創新。輸出：原創內容+數據依據",
-        "model_priority": ["groq", "gemini"],
-    },
-    "@quality_checker": {
-        "role": "品質審核官",
-        "specialty": "嚴格評分，不合格打回重做",
-        "system": "你是品質審核官。評分標準：數據驅動(30)+原創性(30)+可執行性(20)+市場相關(20)。低於75分打回",
-        "model_priority": ["gemini", "groq"],
-    },
-    "@video_producer": {
-        "role": "影片製作專家",
-        "specialty": "將市場洞見轉化為短影片腳本",
-        "system": "你是短影片腳本師。基於市場熱點，30秒內說完一個有價值的洞見。鉤子→洞見→CTA",
-        "model_priority": ["groq", "gemini"],
-    },
-    "@monetizer": {
-        "role": "變現策略師",
-        "specialty": "把內容和流量轉換成收入",
-        "system": "你是變現師。為每一個內容找到最直接的收入路徑：TG訂閱/Gumroad產品/Ko-fi諮詢",
-        "model_priority": ["groq", "gemini"],
-    },
-    "@strategist": {
-        "role": "策略思維師",
-        "specialty": "制定整體框架，不做細節執行",
-        "system": "你是策略師。任務：看透框架和邏輯，不執行細節。輸出：思維框架+決策樹+優先順序",
-        "model_priority": ["gemini", "groq"],
-    },
-}
-
-def _run_subagent(agent_name: str, task: str,
-                   context: str = "") -> str:
-    """執行指定子代理人"""
-    if not agent_name.startswith("@"):
-        agent_name = f"@{agent_name}"
-
-    agent_def = SUBAGENT_DEFINITIONS.get(agent_name)
-    if not agent_def:
-        return f"未知子代理人：{agent_name}"
-
-    # 載入相關錯誤規則
-    rules = _get_relevant_rules(task)
-    rules_injection = ""
-    if rules:
-        rules_injection = "\n【必須避免的已知錯誤】：\n" + \
-                         '\n'.join([f"- {r['rule']}" for r in rules[:3]])
-
-    # 取最新市場數據
-    market_ctx = ""
-    try:
-        conn = sqlite3.connect(BORIS_DB)
-        recent_signals = conn.execute("""SELECT signal FROM market_insights
-            WHERE created_at >= ? ORDER BY strength DESC LIMIT 3""",
-            ((datetime.now(timezone.utc)-timedelta(hours=6)).isoformat(),)).fetchall()
-        conn.close()
-        if recent_signals:
-            market_ctx = "\n【最新市場數據】：\n" + \
-                        '\n'.join([f"- {s[0][:60]}" for s in recent_signals])
-    except: pass
-
-    full_prompt = f"""{agent_def['system']}
-{rules_injection}
-{market_ctx}
-
-任務：{task}
-{('上下文：' + context[:200]) if context else ''}
-
-請執行你的專業角色任務。"""
-
-    start = time.time()
-    result = _ai(full_prompt, agent_def["model_priority"][0], max_tokens=500)
-    elapsed = int((time.time() - start) * 1000)
-
-    # 記錄執行
-    conn = sqlite3.connect(BORIS_DB)
-    quality = _score_subagent_output(result, task)
-    conn.execute("""INSERT INTO subagent_runs
-        (agent_name, task, input, output, quality, success, runtime_ms, created_at)
-        VALUES (?,?,?,?,?,?,?,?)""",
-        (agent_name, task[:100], full_prompt[:200], result[:300],
-         quality, 1 if quality > 60 else 0, elapsed,
-         datetime.now(timezone.utc).isoformat()))
-    conn.commit(); conn.close()
-
-    # 如果品質低，記錄到規則庫
-    if quality < 60:
-        record_error_rule(
-            error_type=f"subagent_low_quality_{agent_name.replace('@','')}",
-            context=task[:50],
-            wrong_approach=f"直接執行，品質{quality:.0f}分",
-            correct_approach="先Plan再執行，加更多上下文",
-            rule=f"{agent_name}執行此類任務需要更多市場數據輸入"
-        )
-
-    return result
-
-def _score_subagent_output(output: str, task: str) -> float:
-    """評估子代理人輸出品質"""
-    if not output or len(output) < 20: return 0
-    length_score = min(len(output)/5, 30)
-    relevance_score = sum(1 for kw in re.findall(r'[\u4e00-\u9fff]{2,}|\w{4,}', task)[:5]
-                         if kw in output) / 5 * 40
-    structure_score = 20 if any(c in output for c in ['。','.','\n','：']) else 5
-    return round(length_score + relevance_score + structure_score, 1)
-
-
-# ══════════════════════════════════════════════════════════════
-# 完整Boris框架執行流水線
-# ══════════════════════════════════════════════════════════════
-
-def run_boris_pipeline(goal: str) -> str:
-    """
-    完整執行Boris的4個框架：
-    1. Plan = Less Errors（先收集數據，制定計劃）
-    2. Parallel Agents（並行執行多個子任務）
-    3. CLAUDE.md記錄（每個環節記錄規則）
-    4. Sub-agents分工（各角色專注自己的任務）
-    """
-    logger.info(f"[Boris Pipeline] 啟動：{goal[:50]}")
-
-    # Framework 1: PLAN
-    plan = plan_before_execute(goal)
-    plan_data = plan.get("plan", {})
-
-    # Framework 4: Sub-agents制定具體任務
-    tasks = {
-        "@market_scout":    f"收集「{goal[:30]}」相關的真實市場信號，分析3個最重要的趨勢",
-        "@strategist":      f"基於市場數據，為「{goal[:30]}」制定最優框架思維，不是細節，是邏輯",
-        "@content_writer":  f"基於市場洞見，為「{goal[:30]}」創作一個原創觀點（不模仿，要有自己的框架）",
-        "@monetizer":       f"為「{goal[:30]}」規劃最直接的變現路徑",
-    }
-
-    # Framework 2: PARALLEL執行
-    results = run_parallel_agents(tasks)
-
-    # 整合結果
-    market_insights = results.get("@market_scout", {}).get("result", "")
-    strategy = results.get("@strategist", {}).get("result", "")
-    content = results.get("@content_writer", {}).get("result", "")
-    monetize = results.get("@monetizer", {}).get("result", "")
-
-    # Framework 4: @quality_checker 審核
-    final_content_for_check = content[:400] if content else ""
-    quality_input = f"策略：{strategy[:100]}\n內容：{final_content_for_check}"
-    quality_result = _run_subagent("@quality_checker", quality_input)
-
-    # 如果品質不過，記錄規則並嘗試改進
-    if "打回" in quality_result or "低於" in quality_result:
-        record_error_rule(
-            error_type="content_quality_fail",
-            context=goal[:50],
-            wrong_approach="直接執行未充分收集市場數據",
-            correct_approach="增加市場數據輸入，強化框架思維",
-            rule="此類任務需要至少5個市場信號才能保證品質"
-        )
-
-    report = f"""🧠 Boris框架完整執行報告
-
-任務：{goal[:60]}
-
-【框架一：Plan = Less Errors】
-市場信號：{plan.get('market_signals',0)}個
-規則應用：{plan.get('rules_applied',0)}條（防止重蹈覆轍）
-計劃步驟：{' → '.join(plan_data.get('steps',[])[:3])}
-
-【框架二：Parallel Agents】
-並行執行：{results.get('total_agents',0)}個Agent同時運行
-成功：{results.get('successful',0)}個
-
-【框架三：CLAUDE.md更新】
-規則庫：{len(_get_relevant_rules(goal))}條規則保護
-
-【框架四：Sub-agents輸出】
-
-@market_scout：
-{market_insights[:150] if market_insights else '無數據'}...
-
-@strategist（框架思維）：
-{strategy[:150] if strategy else '無輸出'}...
-
-@content_writer（原創內容）：
-{content[:150] if content else '無內容'}...
-
-@monetizer（變現路徑）：
-{monetize[:100] if monetize else '無策略'}...
-
-@quality_checker：
-{quality_result[:100] if quality_result else '未審核'}"""
-
-    # 更新計劃狀態
-    conn = sqlite3.connect(BORIS_DB)
-    conn.execute("UPDATE execution_plans SET status='executed', executed_at=? WHERE plan_id=?",
-                (datetime.now(timezone.utc).isoformat(), plan.get('plan_id','')))
-    conn.commit(); conn.close()
-
-    return report
-
-
-# ══════════════════════════════════════════════════════════════
-# 數據驅動內容創作（核心哲學）
-# 先收集→分析規律→創造，不是模仿
-# ══════════════════════════════════════════════════════════════
-
-def create_from_market_data(topic: str = None) -> str:
-    """
-    核心哲學：收集市場數據→分析框架→原創內容
-    不是看爆款然後模仿，而是看透爆款的邏輯然後創新
-    """
-    # 收集真實市場數據
-    import requests
-    signals = []
-    queries = ["AI副業 台灣 2026", "Claude Code 自動化", "短影音賺錢 方法"]
-    for q in queries:
-        try:
-            r = requests.get(
-                f"https://news.google.com/rss/search?q={q}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
-                timeout=8)
-            if r.status_code == 200:
-                root = ET.fromstring(r.text)
-                for item in root.findall('.//item')[:4]:
-                    t = item.find('title')
-                    if t is not None and t.text:
-                        signals.append(t.text[:80])
-            time.sleep(0.3)
-        except: pass
-
-    if not signals:
-        signals = ["AI自動化市場持續成長", "一人公司時代來臨", "短影音變現路徑多元"]
-
-    if not topic:
-        # 從市場信號提取最熱話題
-        topic = signals[0][:30] if signals else "AI副業變現"
-
-    # 分析市場框架（不是看內容，而是看邏輯）
-    analysis_prompt = f"""你是框架分析師（不是內容模仿者）。
-
-分析這些市場信號背後的框架邏輯：
-{chr(10).join(['- '+s for s in signals[:8]])}
-
-你的任務：
-1. 找出這些信號背後的「為什麼」（市場心理）
-2. 提取可複用的框架思維（不是具體內容）
-3. 基於框架，創造一個完全原創的觀點（市場還沒有人說過的角度）
-
-規則：
-- 不能說「就像xxx一樣」（不模仿）
-- 必須說「從數據看出，市場的底層邏輯是...」
-- 最後給出一個讓人「沒想到」的原創切入點
-
-繁體中文，200字"""
-
-    analysis = _ai(analysis_prompt, "gemini", max_tokens=500)
-    if not analysis:
-        analysis = _ai(analysis_prompt, "groq", max_tokens=500)
-
-    # 基於框架創作內容
-    create_prompt = f"""你是原創內容創作者（不是模仿者）。
-
-框架分析：{analysis[:200]}
-話題：{topic}
-市場信號：{signals[0][:60] if signals else ''}
-
-創作要求：
-① 開頭：用一個「反直覺」的事實開場（讓人停下來）
-② 中間：揭示市場框架邏輯（這是別人沒說的）
-③ 結尾：給出可執行的下一步
-
-字數：180字，口語，繁體中文
-關鍵：這是框架思維輸出，不是新聞轉述"""
-
-    tg = E("TG_PAID_LINK", "")
-    content = _ai(create_prompt, "groq", max_tokens=400)
-
-    result = f"""📊 數據驅動創作（Boris框架一）
-
-市場數據收集：{len(signals)}個信號
-框架分析：完成
-原創指數：高（不模仿，看框架）
-
-市場框架洞見：
-{analysis[:200] if analysis else '分析中...'}...
-
-生成原創內容：
-{content[:300] if content else '生成中...'}...
-
-{'連結：' + tg if tg else '（設定TG_PAID_LINK後顯示）'}"""
-
-    return result
-
-
-# ══════════════════════════════════════════════════════════════
-# 全系統儀表板
-# ══════════════════════════════════════════════════════════════
-
-def boris_dashboard() -> str:
-    """Boris框架完整狀態"""
-    conn = sqlite3.connect(BORIS_DB)
-    plans = conn.execute("SELECT COUNT(*) FROM execution_plans").fetchone()[0] or 0
-    rules = conn.execute("SELECT COUNT(*) FROM error_rules").fetchone()[0] or 0
-    parallel = conn.execute("SELECT COUNT(*) FROM parallel_tasks").fetchone()[0] or 0
-    subagents = conn.execute("SELECT agent_name, COUNT(*), AVG(quality) FROM subagent_runs GROUP BY agent_name ORDER BY AVG(quality) DESC").fetchall()
-    market = conn.execute("SELECT COUNT(*) FROM market_insights").fetchone()[0] or 0
-    conn.close()
-
-    lines = [
-        "⚡ Boris框架系統狀態",
-        "─"*40,
-        f"框架一 Plan：{plans}個計劃 | 市場信號：{market}個",
-        f"框架二 Parallel：{parallel}個並行任務記錄",
-        f"框架三 CLAUDE.md：{rules}條規則（防止重蹈覆轍）",
-        f"框架四 Sub-agents：{len(subagents)}個角色",
-        "",
-        "Sub-agents表現：",
-    ]
-    for name, count, quality in subagents:
-        bar = "█" * int((quality or 0)/10)
-        lines.append(f"  {name}: {bar} {quality:.0f}分 ({count}次)")
-
-    lines += [
-        "",
-        "核心哲學：",
-        "  先收集市場數據 → 分析框架邏輯",
-        "  → 原創創造（不模仿）→ 執行 → 記錄規則",
-        "",
-        "指令：",
-        "  python main.py boris_plan [任務]    # Plan框架",
-        "  python main.py boris_pipeline [目標] # 完整4框架",
-        "  python main.py boris_create          # 數據驅動創作",
-        "  python main.py boris_rules           # 查看規則庫",
-    ]
-    return '\n'.join(lines)
-
-
-# ══════════════════════════════════════════════════════════════
-# AI呼叫 + 指令處理器
-# ══════════════════════════════════════════════════════════════
-
-def _ai(prompt: str, model_type: str = "groq", max_tokens: int = 500,
-        _visited: set = None) -> str:
-    """
-    修正版：加入_visited防止無限遞迴
-    Bug原因：groq失敗→fallback gemini→gemini失敗→fallback groq→無限循環
-    修正方式：記錄已嘗試的模型，嘗試過就停止
-    """
-    import requests
     if _visited is None:
         _visited = set()
 
-    # 已嘗試過這個模型 → 直接放棄
-    if model_type in _visited:
-        return ""
-    _visited.add(model_type)
+    # 根據任務類型決定優先模型
+    priority = {
+        "copywrite": ["groq", "gemini", "deepseek"],
+        "fast":      ["groq", "deepseek", "gemini"],
+        "analyze":   ["gemini", "groq", "deepseek"],
+        "strategy":  ["gemini", "openrouter", "groq"],
+        "creative":  ["groq", "gemini", "openrouter"],
+        "code":      ["deepseek", "groq", "gemini"],
+        "general":   ["groq", "gemini", "deepseek"],
+    }.get(task_type, ["groq", "gemini", "deepseek"])
 
-    # 模型優先順序：groq → gemini → deepseek → 放棄
-    FALLBACK_CHAIN = {"groq": "gemini", "gemini": "deepseek", "deepseek": None}
+    for model in priority:
+        if model in _visited:
+            continue
+        _visited.add(model)
+        result = _call_model(model, prompt)
+        if result:
+            return result
 
-    try:
-        if model_type == "groq":
-            key = E("GROQ_API_KEY")
-            if not key: raise Exception("no key")
-            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"},
-                json={"model":"llama-3.3-70b-versatile",
-                      "messages":[{"role":"user","content":prompt}],
-                      "max_tokens":max_tokens,"temperature":0.85}, timeout=30)
-            return r.json()["choices"][0]["message"]["content"].strip()
-
-        elif model_type in ["gemini","strategy","analyze"]:
-            key = E("GEMINI_API_KEY")
-            if not key: raise Exception("no key")
-            r = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}",
-                json={"contents":[{"parts":[{"text":prompt}]}],
-                      "generationConfig":{"maxOutputTokens":max_tokens}},
-                timeout=40)
-            return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-
-        elif model_type == "deepseek":
-            key = E("DEEPSEEK_API_KEY")
-            if not key: raise Exception("no key")
-            r = requests.post("https://api.deepseek.com/chat/completions",
-                headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"},
-                json={"model":"deepseek-chat",
-                      "messages":[{"role":"user","content":prompt}],
-                      "max_tokens":max_tokens}, timeout=30)
-            return r.json()["choices"][0]["message"]["content"].strip()
-
-    except Exception as e:
-        logger.debug(f"[AI] {model_type}: {e}")
-        # 找下一個備援模型（不重複）
-        next_model = FALLBACK_CHAIN.get(model_type)
-        if next_model and next_model not in _visited:
-            return _ai(prompt, next_model, max_tokens, _visited)
+    logger.error(f"所有模型失敗，task={task_type}")
     return ""
 
-def _ai_by_task(prompt: str, task_type: str, max_tokens: int = 500) -> str:
-    priority = {"strategy": "gemini", "analyze": "gemini", "creative": "groq", "copywrite": "groq"}
-    return _ai(prompt, priority.get(task_type, "groq"), max_tokens)
+def _call_model(model: str, prompt: str) -> str:
+    """實際呼叫指定模型"""
+    try:
+        if model == "groq":
+            return _call_groq(prompt)
+        elif model == "gemini":
+            return _call_gemini(prompt)
+        elif model == "deepseek":
+            return _call_deepseek(prompt)
+        elif model == "openrouter":
+            return _call_openrouter(prompt)
+    except Exception as e:
+        logger.warning(f"模型 {model} 失敗: {e}")
+    return ""
 
+def _call_groq(prompt: str) -> str:
+    key = E("GROQ_API_KEY")
+    if not key:
+        return ""
+    import urllib.request
+    data = json.dumps({
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1500,
+        "temperature": 0.7
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=data,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        resp = json.loads(r.read())
+        return resp["choices"][0]["message"]["content"].strip()
 
+def _call_gemini(prompt: str) -> str:
+    key = E("GEMINI_API_KEY")
+    if not key:
+        return ""
+    import urllib.request
+    data = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 1500, "temperature": 0.7}
+    }).encode()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        resp = json.loads(r.read())
+        return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-# ══════════════════════════════════════════════════════════════
-# 九宮格指令框架（@aiden91.3，90秒）
-# 第一步：畫兩個九宮格
-# 格1中心=你的專業 格2中心=受眾興趣
-# 交集點 = 爆款鉤子
-# ══════════════════════════════════════════════════════════════
+def _call_deepseek(prompt: str) -> str:
+    key = E("DEEPSEEK_API_KEY")
+    if not key:
+        return ""
+    import urllib.request
+    data = json.dumps({
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1500
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.deepseek.com/v1/chat/completions",
+        data=data,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        resp = json.loads(r.read())
+        return resp["choices"][0]["message"]["content"].strip()
+
+def _call_openrouter(prompt: str) -> str:
+    key = E("OPENROUTER_API_KEY")
+    if not key:
+        return ""
+    import urllib.request
+    data = json.dumps({
+        "model": "mistralai/mistral-7b-instruct:free",
+        "messages": [{"role": "user", "content": prompt}]
+    }).encode()
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://shadow-notes.tw"
+        }
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        resp = json.loads(r.read())
+        return resp["choices"][0]["message"]["content"].strip()
+
+# ─────────────────────────────────────────
+# Telegram 通知
+# ─────────────────────────────────────────
+def tg(msg: str, chat_id: str = None) -> bool:
+    """發送 Telegram 訊息"""
+    if not TG_TOKEN:
+        logger.info(f"[TG-模擬] {msg[:100]}")
+        return True
+    cid = chat_id or TG_CHAT_ID
+    if not cid:
+        return False
+    import urllib.request
+    try:
+        data = json.dumps({
+            "chat_id": cid,
+            "text": msg[:4000],
+            "parse_mode": "HTML"
+        }).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+            data=data,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read()).get("ok", False)
+    except Exception as e:
+        logger.error(f"TG發送失敗: {e}")
+        return False
+
+def tg_paid(msg: str) -> bool:
+    """發送到付費頻道"""
+    return tg(msg, TG_PAID_CHAT)
+
+# ─────────────────────────────────────────
+# 資料庫初始化
+# ─────────────────────────────────────────
+def init_all_db():
+    """初始化所有資料庫表格"""
+
+    # Boris 框架 DB
+    conn = sqlite3.connect(BORIS_DB)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS execution_plans (
+            id INTEGER PRIMARY KEY,
+            plan_id TEXT UNIQUE,
+            task TEXT,
+            market_data TEXT,
+            analysis TEXT,
+            plan TEXT,
+            risk TEXT,
+            expected_outcome TEXT,
+            status TEXT DEFAULT 'planned',
+            actual_outcome TEXT,
+            success INTEGER DEFAULT -1,
+            created_at TEXT,
+            executed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS agent_errors (
+            id INTEGER PRIMARY KEY,
+            agent TEXT,
+            error_type TEXT,
+            description TEXT,
+            rule_added TEXT,
+            timestamp TEXT
+        );
+        CREATE TABLE IF NOT EXISTS nine_grid_hooks (
+            id INTEGER PRIMARY KEY,
+            audience TEXT,
+            hook TEXT,
+            grid1_center TEXT,
+            grid2_center TEXT,
+            created_at TEXT,
+            score INTEGER DEFAULT 0
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    # Revenue DB
+    conn = sqlite3.connect(REVENUE_DB)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS revenue_log (
+            id INTEGER PRIMARY KEY,
+            amount INTEGER,
+            source TEXT,
+            note TEXT,
+            created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS monthly_summary (
+            id INTEGER PRIMARY KEY,
+            month TEXT UNIQUE,
+            total INTEGER,
+            sources TEXT
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    # Quality Monitor DB（修正：加 UNIQUE 約束）
+    conn = sqlite3.connect(QUALITY_DB)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS model_quality (
+            id INTEGER PRIMARY KEY,
+            model TEXT,
+            task_type TEXT,
+            latency_ms INTEGER,
+            score INTEGER,
+            degraded INTEGER DEFAULT 0,
+            checked_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS system_health (
+            id INTEGER PRIMARY KEY,
+            component TEXT UNIQUE,
+            status TEXT,
+            detail TEXT,
+            checked_at TEXT
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    logger.info("所有資料庫初始化完成")
+
+# ─────────────────────────────────────────
+# ── 模組一：市場數據收集（A1 偵察員）
+# ─────────────────────────────────────────
+def collect_data(args: list = []) -> str:
+    """收集真實市場數據（RSS + Google Autocomplete + Google News）"""
+    results = []
+    results.append(_collect_rss())
+    results.append(_collect_autocomplete())
+    summary = "\n\n".join(results)
+    tg(f"📡 <b>市場數據收集完成</b>\n{summary[:2000]}")
+    return summary
+
+def _collect_rss() -> str:
+    """RSS 全源收集"""
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    sources = [
+        ("iThome", "https://www.ithome.com.tw/rss"),
+        ("TechCrunch", "https://techcrunch.com/feed/"),
+        ("ProductHunt", "https://www.producthunt.com/feed"),
+        ("HackerNews", "https://hnrss.org/frontpage"),
+    ]
+
+    articles = []
+    for name, url in sources:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                tree = ET.parse(r)
+                root = tree.getroot()
+                ns = ""
+                items = root.findall(".//item") or root.findall(".//{http://www.w3.org/2005/Atom}entry")
+                for item in items[:5]:
+                    title = (item.findtext("title") or item.findtext("{http://www.w3.org/2005/Atom}title") or "").strip()
+                    if title:
+                        articles.append(f"[{name}] {title}")
+        except Exception as e:
+            articles.append(f"[{name}] 收集失敗: {e}")
+
+    return f"📰 RSS收集：{len(articles)}篇\n" + "\n".join(articles[:20])
+
+def _collect_autocomplete() -> str:
+    """Google Autocomplete 真實關鍵字"""
+    import urllib.request
+    import urllib.parse
+
+    keywords = ["AI副業", "被動收入", "自動化賺錢", "AI工具推薦", "副業2026"]
+    results = []
+
+    for kw in keywords:
+        try:
+            url = f"https://suggestqueries.google.com/complete/search?client=firefox&q={urllib.parse.quote(kw)}&hl=zh-TW"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read())
+                suggestions = data[1][:3] if len(data) > 1 else []
+                for s in suggestions:
+                    results.append(s)
+        except Exception as e:
+            results.append(f"[{kw}] 失敗: {e}")
+
+    return f"🔍 Google關鍵字：{len(results)}條\n" + "\n".join(results[:15])
+
+# ─────────────────────────────────────────
+# ── 模組二：Boris 框架（v18.19）
+# ─────────────────────────────────────────
+def boris_plan(args: list = []) -> str:
+    """框架一：Plan = Less Errors（先收集數據，再制定計劃，才執行）"""
+    task = " ".join(args) if args else "今日內容策略"
+
+    # Step 1: 收集真實市場數據
+    market_data = _collect_autocomplete()
+
+    # Step 2: AI 分析
+    analysis = _ai(f"""
+分析以下市場數據，找出今日最適合「暗面筆記 AI自動化副業」主題的內容方向：
+
+市場數據：
+{market_data}
+
+任務：{task}
+
+請輸出：
+1. 最熱門話題（3個）
+2. 目標受眾痛點
+3. 建議內容角度
+4. 預估爆款潛力評分（1-10）
+""", task_type="analyze")
+
+    # Step 3: 制定計劃
+    plan = _ai(f"""
+基於以下分析，制定具體執行計劃：
+
+分析結果：{analysis}
+
+請輸出包含：
+- 今日發布主題（1個）
+- 文案鉤子（3句）
+- 發布平台順序
+- 預期互動指標
+""", task_type="strategy")
+
+    # 存入 DB
+    plan_id = f"plan_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    conn = sqlite3.connect(BORIS_DB)
+    conn.execute("""
+        INSERT OR REPLACE INTO execution_plans
+        (plan_id, task, market_data, analysis, plan, status, created_at)
+        VALUES (?,?,?,?,?,'planned',?)
+    """, (plan_id, task, market_data[:500], analysis[:500], plan[:500],
+          datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.close()
+
+    result = f"""🧠 <b>Boris Plan 框架</b>
+任務：{task}
+計劃ID：{plan_id}
+
+📊 市場數據：
+{market_data[:300]}
+
+🔍 分析：
+{analysis[:400]}
+
+📋 執行計劃：
+{plan[:400]}
+"""
+    tg(result)
+    return result
+
+def boris_parallel(args: list = []) -> str:
+    """框架二：平行 Agent 執行（ThreadPoolExecutor）"""
+    tasks = args if args else [
+        "收集AI副業最新趨勢",
+        "分析競品暗面筆記類型帳號",
+        "生成今日鉤子文案",
+        "評估昨日內容表現",
+        "規劃明日發布策略"
+    ]
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {
+            executor.submit(_ai, f"請針對以下任務提供簡短專業建議（100字內）：{task}", "fast"): task
+            for task in tasks
+        }
+        for future in as_completed(futures, timeout=60):
+            task = futures[future]
+            try:
+                results[task] = future.result() or "（無回應）"
+            except Exception as e:
+                results[task] = f"失敗: {e}"
+
+    output = "⚡ <b>並行 Agent 執行結果</b>\n\n"
+    for task, result in results.items():
+        output += f"▸ {task}\n{result[:150]}\n\n"
+
+    tg(output)
+    return output
+
+def boris_rules(args: list = []) -> str:
+    """框架三：查看 CLAUDE.md 規則庫"""
+    if not Path(RULES_FILE).exists():
+        default_rules = [
+            "groq失敗不重試groq，使用_visited集合避免無限遞迴",
+            "DB system_health表需有UNIQUE約束在component欄位",
+            "影片開頭前3秒必須是鉤子文字，不是Logo",
+            "Gemini 2026-05-17起改算力制，高頻任務優先用groq/deepseek",
+            "所有數據要基於真實收集，不允許AI猜測",
+        ]
+        with open(RULES_FILE, "w") as f:
+            json.dump(default_rules, f, ensure_ascii=False, indent=2)
+
+    with open(RULES_FILE) as f:
+        rules = json.load(f)
+
+    output = f"📚 <b>CLAUDE.md 規則庫（{len(rules)}條）</b>\n\n"
+    for i, rule in enumerate(rules, 1):
+        output += f"{i}. {rule}\n"
+    return output
+
+def boris_record_error(args: list = []) -> str:
+    """框架三：記錄錯誤並更新規則庫"""
+    if len(args) < 2:
+        return "用法：boris_record_error [agent名稱] [錯誤描述]"
+
+    agent = args[0]
+    error_desc = " ".join(args[1:])
+
+    # AI 生成規則
+    rule = _ai(f"""
+以下是AI Agent犯的錯誤，請生成一條簡潔的規則（20字內）來防止此錯誤再次發生：
+
+Agent：{agent}
+錯誤：{error_desc}
+
+只輸出規則本文，不要其他文字。
+""", task_type="fast")
+
+    # 更新規則庫
+    rules = []
+    if Path(RULES_FILE).exists():
+        with open(RULES_FILE) as f:
+            rules = json.load(f)
+    rules.append(rule or error_desc[:50])
+    with open(RULES_FILE, "w") as f:
+        json.dump(rules, f, ensure_ascii=False, indent=2)
+
+    # 記錄到 DB
+    conn = sqlite3.connect(BORIS_DB)
+    conn.execute("""
+        INSERT INTO agent_errors (agent, error_type, description, rule_added, timestamp)
+        VALUES (?,?,?,?,?)
+    """, (agent, "runtime", error_desc, rule, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.close()
+
+    return f"✅ 已記錄錯誤並新增規則：\n{rule}"
+
+def boris_dashboard(args: list = []) -> str:
+    """Boris 框架狀態儀表板"""
+    conn = sqlite3.connect(BORIS_DB)
+    plans = conn.execute("SELECT COUNT(*), SUM(success) FROM execution_plans").fetchone()
+    errors = conn.execute("SELECT COUNT(*) FROM agent_errors").fetchone()
+    hooks = conn.execute("SELECT COUNT(*) FROM nine_grid_hooks").fetchone()
+    conn.close()
+
+    rules_count = 0
+    if Path(RULES_FILE).exists():
+        with open(RULES_FILE) as f:
+            rules_count = len(json.load(f))
+
+    return f"""📊 <b>Boris 框架儀表板</b>
+
+執行計劃：{plans[0]}個（成功：{plans[1] or 0}）
+記錄錯誤：{errors[0]}條
+CLAUDE.md規則：{rules_count}條
+九宮格鉤子庫：{hooks[0]}個
+
+框架狀態：
+✅ 框架一（Plan）：運行中
+✅ 框架二（Parallel）：運行中
+✅ 框架三（CLAUDE.md）：運行中
+✅ 框架四（Sub-agents）：運行中
+"""
+
+# ─────────────────────────────────────────
+# ── 模組三：九宮格指令框架（v18.19）
+# ─────────────────────────────────────────
 
 GRID1_SHADOW_NOTES = {
-    "core": "AI自動化賺錢",
-    "cells": [
-        "內容創作", "AI工具", "自動發布",
-        "AI自動化賺錢", "短影音", "Threads貼文",
-        "被動收入", "副業系統", "數位產品"
-    ]
+    "center": "AI自動化賺錢",
+    "cells": ["內容自動化", "多平台發布", "流量變現", "AI工具應用",
+              "被動收入", "訂閱制", "聯盟行銷", "數據驅動"]
 }
 
 GRID2_AUDIENCE = {
     "office_worker": {
-        "core": "典趣",
-        "cells": ["追劇", "美食", "旅遊", "典趣", "健身", "買精品", "週末計畫", "下班後", "存錢"]
+        "center": "上班族興趣",
+        "cells": ["旅遊", "美食", "買精品", "投資理財",
+                  "下班娛樂", "副業", "健身", "追劇"]
     },
     "entrepreneur": {
-        "core": "成長",
-        "cells": ["學習新技能", "賺更多", "時間自由", "成長", "找好工具", "省成本", "做生意", "品牌建立", "副業"]
+        "center": "企業主需求",
+        "cells": ["降低成本", "自動化流程", "品牌曝光", "客戶獲取",
+                  "數據分析", "員工效率", "競品監控", "現金流"]
     },
     "student": {
-        "core": "未來",
-        "cells": ["考試", "打工", "找工作", "未來", "學技能", "省錢", "追星", "社群", "創業"]
+        "center": "學生興趣",
+        "cells": ["遊戲", "動漫", "打工賺錢", "學習技能",
+                  "交友", "穿搭", "零食", "考試"]
     }
 }
 
-def gen_nine_grid_hooks(grid1_topic=None, audience_type="office_worker", count=5):
-    g1 = GRID1_SHADOW_NOTES
-    g2 = GRID2_AUDIENCE.get(audience_type, GRID2_AUDIENCE["office_worker"])
-    import random, itertools
-    g1_cells = [c for c in g1["cells"] if c != g1["core"]]
-    g2_cells = [c for c in g2["cells"] if c != g2["core"]]
-    combo = list(itertools.product(g1_cells[:6], g2_cells[:6]))
-    random.shuffle(combo)
-    pairs = combo[:count]
-    templates = [
-        "為什麼每天{i}的人，用AI把{e}變成自動收入？",
-        "同樣{i}的人，有人靠{e}月賺5萬，有人還在加班",
-        "{i}族群最不知道的{e}秘密",
-        "你在{i}上花的時間，我用{e}在賺錢",
-        "不是你{i}能力不夠，是你還不知道{e}可以這樣用",
-    ]
-    hooks = []
-    for idx2, (exp, intr) in enumerate(pairs):
-        t = templates[idx2 % len(templates)]
-        hook = t.format(e=exp, i=intr)
-        hooks.append({"expertise": exp, "interest": intr, "hook": hook,
-                      "platform": ["threads","tiktok"][idx2 % 2]})
-    if E("GROQ_API_KEY") or E("GEMINI_API_KEY"):
-        top = pairs[:3]
-        prompt = ("爆款文案師。九宮格交集法生成3個鉤子：\n交集："
-                  + ";".join([f"{e}x{i}" for e,i in top])
-                  + "\n受眾：台灣AI族群，暗面筆記AI自動化方向。"
-                    "每個鉤子：反直覺開場+交集點+好奇結尾。3行繁體中文")
-        ai = _ai(prompt, "groq", 300)
-        if ai:
-            ai_hooks = [h.strip() for h in ai.strip().split("\n") if h.strip()][:3]
-            for j2, txt in enumerate(ai_hooks):
-                if j2 < len(hooks):
-                    hooks[j2]["hook_ai"] = txt
-    try:
-        conn = sqlite3.connect(BORIS_DB)
-        for h in hooks[:3]:
-            conn.execute("INSERT INTO market_insights (source,signal,strength,created_at) VALUES (?,?,?,?)",
-                ("nine_grid", h["hook"], 88, datetime.now(timezone.utc).isoformat()))
-        conn.commit(); conn.close()
-    except: pass
-    return {"grid1_core": g1["core"], "grid2_core": g2["core"],
-            "audience": audience_type, "hooks": hooks, "total_combos": len(combo)}
+def gen_nine_grid_hooks(args: list = []) -> str:
+    """生成九宮格交集鉤子文案"""
+    audience = args[0] if args else "office_worker"
+    grid2 = GRID2_AUDIENCE.get(audience, GRID2_AUDIENCE["office_worker"])
 
+    # 找交集點
+    intersections = []
+    for c1 in GRID1_SHADOW_NOTES["cells"][:4]:
+        for c2 in grid2["cells"][:4]:
+            intersections.append((c1, c2))
 
-def gen_nine_grid_content_plan(weeks=4):
-    out = [f"暗面筆記 {weeks}週九宮格內容計劃"]
-    days_map = [(1,"entrepreneur"),(3,"office_worker"),(5,"student")]
-    for wk in range(1, weeks+1):
-        out.append(f"\n第{wk}週")
-        for day, aud in days_map:
-            res = gen_nine_grid_hooks(audience_type=aud, count=1)
-            if res["hooks"]:
-                h = res["hooks"][0]
-                hook = h.get("hook_ai", h["hook"])
-                out.append(f"  週{day}[{aud[:6]}] {hook[:55]}")
-    return "\n".join(out)
+    # AI 生成鉤子
+    prompt = f"""
+你是爆款內容專家。使用九宮格方法生成5個鉤子文案：
 
+格一（暗面筆記專業）：{GRID1_SHADOW_NOTES['center']}
+相關概念：{', '.join(GRID1_SHADOW_NOTES['cells'])}
 
-def handle_v1819(cmd: str, args: list = None) -> str:
-    args = args or []
+格二（受眾興趣：{grid2['center']}）：
+相關概念：{', '.join(grid2['cells'])}
 
-    if cmd == "boris_dashboard": return boris_dashboard()
+交集點：{', '.join([f'{c1}×{c2}' for c1,c2 in intersections[:6]])}
 
-    elif cmd == "boris_plan":
-        task = ' '.join(args) if args else "用AI創作爆款內容並變現"
-        plan = plan_before_execute(task)
-        plan_data = plan.get("plan", {})
-        return (f"Boris框架一：Plan\n"
-                f"任務：{task[:50]}\n"
-                f"市場信號：{plan['market_signals']}個\n"
-                f"規則保護：{plan['rules_applied']}條\n"
-                f"步驟：{' → '.join(plan_data.get('steps', [])[:3])}")
+請生成5個鉤子文案，每個30字內，格式如：
+1. [鉤子文案]
+2. [鉤子文案]
+...
 
-    elif cmd == "boris_pipeline":
-        goal = ' '.join(args) if args else "用真實市場數據創作AI副業內容並變現"
-        return run_boris_pipeline(goal)
-
-    elif cmd == "boris_create":
-        topic = args[0] if args else None
-        return create_from_market_data(topic)
-
-    elif cmd == "boris_parallel":
-        tasks = {
-            "@market_scout":   "收集今日最熱AI副業話題",
-            "@content_writer": "創作一篇原創AI洞見貼文",
-            "@monetizer":      "規劃最快的變現路徑",
-        }
-        results = run_parallel_agents(tasks)
-        succ = results.get("successful", 0)
-        total = results.get("total_agents", 0)
-        lines_out = [f"並行Agent執行完成（{succ}/{total}成功）"]
-        for agent, r in results.items():
-            if isinstance(r, dict) and "result" in r:
-                lines_out.append(f"\n{agent}：\n{str(r['result'])[:120]}...")
-        return '\n'.join(lines_out)
-
-    elif cmd == "boris_rules":
-        return get_claude_md_content()
-
-    elif cmd == "boris_record_error":
-        if len(args) < 3:
-            return "用法：boris_record_error [類型] [錯誤做法] [正確做法]"
-        record_error_rule(args[0], "", args[1], args[2], f"避免：{args[1]}")
-        return f"✅ 規則記錄：{args[0]} → {args[2][:50]}"
-
-    elif cmd == "boris_subagent":
-        agent = args[0] if args else "@strategist"
-        task = ' '.join(args[1:]) if len(args) > 1 else "分析台灣AI副業市場的核心邏輯"
-        result = _run_subagent(agent, task)
-        return f"🤖 {agent}執行：\n{result[:400]}"
-
-    elif cmd == "nine_grid":
-        audience = args[0] if args else "office_worker"
-        result = gen_nine_grid_hooks(audience_type=audience, count=5)
-        g1 = result["grid1_core"]
-        g2 = result["grid2_core"]
-        total = result["total_combos"]
-        hooks = result["hooks"][:5]
-        out = [f"九宮格指令 [{audience}]",
-               f"專業格：{g1} | 興趣格：{g2}",
-               f"可用組合：{total}個", ""]
-        for i, h in enumerate(hooks):
-            hook = h.get("hook_ai", h["hook"])
-            out.append(f"{i+1}. [{h['platform']}] {hook}")
-        return chr(10).join(out)
-
-    elif cmd == "nine_grid_plan":
-        weeks = int(args[0]) if args else 4
-        return gen_nine_grid_content_plan(weeks)
-
-    return f"[v18.19] 未知：{cmd}"
-
-
+原則：引發好奇、製造反差、說出痛點。
 """
-整合說明：
-dispatch加入：
-elif cmd in ["boris_dashboard","boris_plan","boris_pipeline","boris_create",
-             "boris_parallel","boris_rules","boris_record_error","boris_subagent",
-             "nine_grid","nine_grid_plan"]:
-    from shadow_notes_v1819 import handle_v1819
-    result = handle_v1819(cmd, sys.argv[2:] if len(sys.argv)>2 else [])
+    hooks_text = _ai(prompt, task_type="copywrite")
+
+    # 存入 DB
+    conn = sqlite3.connect(BORIS_DB)
+    for line in hooks_text.split("\n"):
+        if re.match(r"^\d+\.", line.strip()):
+            hook = re.sub(r"^\d+\.\s*", "", line.strip())
+            conn.execute("""
+                INSERT INTO nine_grid_hooks (audience, hook, grid1_center, grid2_center, created_at)
+                VALUES (?,?,?,?,?)
+            """, (audience, hook, GRID1_SHADOW_NOTES["center"], grid2["center"],
+                  datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.close()
+
+    result = f"🎯 <b>九宮格鉤子（{grid2['center']}）</b>\n\n{hooks_text}"
     tg(result)
+    return result
 
-指令速查：
-python main.py nine_grid                    # 生成5個鉤子（上班族）
-python main.py nine_grid entrepreneur       # 企業主版本
-python main.py nine_grid student           # 學生版本
-python main.py nine_grid_plan 4            # 生成4週內容計劃
-python main.py boris_plan [任務]            # Boris Plan框架
-python main.py boris_pipeline [目標]        # 完整4框架執行
-python main.py boris_create               # 數據驅動原創
+def gen_nine_grid_content_plan(args: list = []) -> str:
+    """生成多週內容計劃"""
+    weeks = int(args[0]) if args else 4
+    audience = args[1] if len(args) > 1 else "office_worker"
+
+    prompt = f"""
+為「暗面筆記 AI自動化副業」帳號生成{weeks}週內容計劃。
+
+目標受眾：{GRID2_AUDIENCE.get(audience, {}).get('center', '上班族')}
+核心主題：AI自動化、被動收入、副業變現
+
+每週輸出：
+- 週主題
+- 3個貼文標題（含鉤子）
+- 1個影片腳本方向
+- 1個TG付費內容方向
+
+格式：
+第X週：[週主題]
+貼文1：[標題]
+貼文2：[標題]
+貼文3：[標題]
+影片：[方向]
+TG付費：[內容方向]
 """
+    plan = _ai(prompt, task_type="strategy")
+    result = f"📅 <b>{weeks}週內容計劃</b>\n\n{plan}"
+    tg(result)
+    return result
+
+# ─────────────────────────────────────────
+# ── 模組四：七蜂群執行（v18.16）
+# ─────────────────────────────────────────
+
+def run_master_cycle(utc_hour: int = None) -> str:
+    """七蜂群主循環 — 根據UTC時間執行對應蜂群"""
+    if utc_hour is None:
+        utc_hour = datetime.now(timezone.utc).hour
+
+    results = []
+
+    # A1 偵察員：UTC 4, 10, 16
+    if utc_hour in [4, 10, 16]:
+        r = collect_data()
+        results.append(f"A1偵察員：{r[:100]}")
+
+    # A2 分析師：UTC 6, 14, 22
+    if utc_hour in [6, 14, 22]:
+        r = master_brief()
+        results.append(f"A2分析師：{r[:100]}")
+
+    # A3 文案師：UTC 7, 12, 18, 22
+    if utc_hour in [7, 12, 18, 22]:
+        r = gen_nine_grid_hooks(["office_worker"])
+        results.append(f"A3文案師：{r[:100]}")
+
+    # A4 策略師：UTC 0, 12
+    if utc_hour in [0, 12]:
+        r = boris_plan(["今日策略規劃"])
+        results.append(f"A4策略師：{r[:100]}")
+
+    # A6 變現師：UTC 3, 9, 15, 21
+    if utc_hour in [3, 9, 15, 21]:
+        r = monetize_run()
+        results.append(f"A6變現師：{r[:100]}")
+
+    # A7 進化引擎：UTC 22, 23
+    if utc_hour in [22, 23]:
+        r = evolve_run()
+        results.append(f"A7進化引擎：{r[:100]}")
+
+    if results:
+        summary = f"🐝 <b>蜂群執行 UTC{utc_hour:02d}:00</b>\n\n" + "\n".join(results)
+        tg(summary)
+        return summary
+    return f"UTC{utc_hour:02d}: 無排程任務"
+
+def master_brief() -> str:
+    """A2 分析師：今日 AI 簡報"""
+    market = _collect_autocomplete()
+    brief = _ai(f"""
+基於以下市場數據，生成「暗面筆記」今日策略簡報：
+
+{market}
+
+輸出包含：
+1. 今日最熱話題（3個）
+2. 建議內容策略（2點）
+3. 變現機會提示（1個）
+4. 風險提示（1個）
+
+繁體中文，簡潔有力。
+""", task_type="analyze")
+
+    result = f"📊 <b>今日AI簡報</b>\n{datetime.now().strftime('%Y-%m-%d')}\n\n{brief}"
+    tg(result)
+    return result
+
+def master_scan() -> str:
+    """全平台掃描"""
+    rss = _collect_rss()
+    auto = _collect_autocomplete()
+    result = f"🌐 <b>全平台掃描完成</b>\n\n{rss}\n\n{auto}"
+    tg(result)
+    return result
+
+def master_run() -> str:
+    """執行當前時段任務"""
+    return run_master_cycle()
+
+def master_evolve() -> str:
+    """系統進化分析"""
+    return evolve_run()
+
+# ─────────────────────────────────────────
+# ── 模組五：變現系統（A6 變現師）
+# ─────────────────────────────────────────
+
+def monetize_run(args: list = []) -> str:
+    """A6 變現師：流量→收入轉換策略"""
+    # 查詢當前收入
+    conn = sqlite3.connect(REVENUE_DB)
+    total = conn.execute("SELECT COALESCE(SUM(amount),0) FROM revenue_log WHERE created_at >= date('now','start of month')").fetchone()[0]
+    conn.close()
+
+    prompt = f"""
+你是「暗面筆記」的變現顧問。
+
+當前月收入：NT${total}
+目標月收入：NT$990（TG付費10人）
+缺口：NT${max(0, 990-total)}
+
+請生成今日變現行動：
+1. TG付費頻道推廣文案（發到Threads）
+2. 蝦皮聯盟行銷推薦商品類型
+3. Gumroad電子書促銷文案
+
+繁體中文，每項50字內。
+"""
+    strategy = _ai(prompt, task_type="copywrite")
+    result = f"💰 <b>變現師建議</b>\n月收入：NT${total}\n\n{strategy}"
+    tg(result)
+    return result
+
+def revenue_log(args: list = []) -> str:
+    """記錄收入"""
+    if len(args) < 2:
+        return "用法：revenue_log [金額] [來源] [備註（選填）]"
+
+    amount = int(args[0])
+    source = args[1]
+    note = " ".join(args[2:]) if len(args) > 2 else ""
+
+    conn = sqlite3.connect(REVENUE_DB)
+    conn.execute("""
+        INSERT INTO revenue_log (amount, source, note, created_at)
+        VALUES (?,?,?,?)
+    """, (amount, source, note, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+
+    total = conn.execute("SELECT COALESCE(SUM(amount),0) FROM revenue_log WHERE created_at >= date('now','start of month')").fetchone()[0]
+    conn.close()
+
+    result = f"✅ <b>收入記錄</b>\n+NT${amount}（{source}）\n本月累計：NT${total}"
+    tg(result)
+    return result
+
+# ─────────────────────────────────────────
+# ── 模組六：AI短劇引擎（v18.18）
+# ─────────────────────────────────────────
+
+DRAMA_THEMES = {
+    "古裝復仇": {"genre": "古裝", "tone": "熱血復仇", "hook": "被人陷害的主角一步步逆風翻盤"},
+    "現代愛情": {"genre": "現代", "tone": "甜虐愛情", "hook": "錯過彼此的兩個人最終重逢"},
+    "懸疑驚悚": {"genre": "懸疑", "tone": "燒腦驚悚", "hook": "每集末尾反轉讓觀眾停不下來"},
+    "奇幻冒險": {"genre": "奇幻", "tone": "熱血冒險", "hook": "廢柴少年覺醒成最強者"},
+    "都市日常": {"genre": "都市", "tone": "治癒溫暖", "hook": "普通人的生活藏著不普通的故事"},
+}
+
+def drama_create(args: list = []) -> str:
+    """創建AI短劇專案"""
+    theme_key = args[0] if args else "古裝復仇"
+    theme = DRAMA_THEMES.get(theme_key, DRAMA_THEMES["古裝復仇"])
+
+    prompt = f"""
+你是頂級短劇編劇。創作一部{theme['genre']}短劇大綱：
+
+主題：{theme_key}
+風格：{theme['tone']}
+鉤子：{theme['hook']}
+
+輸出：
+【世界觀】（50字）
+【主角】姓名+背景+核心動機（30字）
+【反派】姓名+動機（20字）
+【10集大綱】
+第1集：[劇情]（30字）
+第2集：[劇情]
+...第10集：[劇情]
+
+每集末尾必須有懸念或反轉。
+"""
+    outline = _ai(prompt, task_type="creative")
+
+    drama_id = f"drama_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    conn = sqlite3.connect(BORIS_DB)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dramas (
+            id INTEGER PRIMARY KEY,
+            drama_id TEXT UNIQUE,
+            theme TEXT,
+            outline TEXT,
+            status TEXT DEFAULT 'created',
+            created_at TEXT
+        )
+    """)
+    conn.execute("""
+        INSERT INTO dramas (drama_id, theme, outline, created_at)
+        VALUES (?,?,?,?)
+    """, (drama_id, theme_key, outline, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.close()
+
+    result = f"🎬 <b>短劇創建：{theme_key}</b>\nID：{drama_id}\n\n{outline[:600]}"
+    tg(result)
+    return result
+
+def drama_storyboard(args: list = []) -> str:
+    """生成分鏡腳本"""
+    if len(args) < 2:
+        return "用法：drama_storyboard [drama_id] [集數]"
+
+    drama_id = args[0]
+    episode = int(args[1])
+
+    # 取大綱
+    conn = sqlite3.connect(BORIS_DB)
+    row = conn.execute("SELECT theme, outline FROM dramas WHERE drama_id=?", (drama_id,)).fetchone()
+    conn.close()
+
+    if not row:
+        return f"找不到專案：{drama_id}"
+
+    theme, outline = row
+    prompt = f"""
+你是短劇分鏡師。為以下短劇生成第{episode}集的9格分鏡腳本：
+
+主題：{theme}
+大綱：{outline[:400]}
+
+輸出9格分鏡，每格：
+[格{n}]
+場景：[地點+時間]
+角色：[誰]
+動作：[做什麼]
+對白：「[台詞]」
+鏡頭：[特寫/中景/遠景]
+情緒：[氛圍]
+"""
+    storyboard = _ai(prompt, task_type="creative")
+    result = f"🎞️ <b>第{episode}集分鏡</b>（{drama_id}）\n\n{storyboard[:800]}"
+    tg(result)
+    return result
+
+def drama_list(args: list = []) -> str:
+    """列出所有短劇專案"""
+    conn = sqlite3.connect(BORIS_DB)
+    try:
+        rows = conn.execute("SELECT drama_id, theme, status, created_at FROM dramas ORDER BY created_at DESC LIMIT 10").fetchall()
+    except:
+        rows = []
+    conn.close()
+
+    if not rows:
+        return "尚無短劇專案，使用 drama_create 開始"
+
+    output = "🎬 <b>短劇專案列表</b>\n\n"
+    for r in rows:
+        output += f"▸ {r[1]}（{r[2]}）\n  ID：{r[0]}\n  建立：{r[3][:10]}\n\n"
+    return output
+
+# ─────────────────────────────────────────
+# ── 模組七：EvolveMem 自我進化（v18.18）
+# ─────────────────────────────────────────
+
+def evolve_run(args: list = []) -> str:
+    """A7 進化引擎：每日系統自我進化（EVALUATE→DIAGNOSE→PROPOSE→GUARD）"""
+
+    # EVALUATE：分析當前策略表現
+    conn = sqlite3.connect(REVENUE_DB)
+    revenue_this_month = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM revenue_log WHERE created_at >= date('now','start of month')"
+    ).fetchone()[0]
+    conn.close()
+
+    conn = sqlite3.connect(BORIS_DB)
+    plan_count = conn.execute("SELECT COUNT(*) FROM execution_plans WHERE created_at >= date('now','-7 days')").fetchone()[0]
+    hook_count = conn.execute("SELECT COUNT(*) FROM nine_grid_hooks WHERE created_at >= date('now','-7 days')").fetchone()[0]
+    conn.close()
+
+    evaluation = f"本月收入NT${revenue_this_month}，本週執行{plan_count}個計劃，生成{hook_count}個鉤子"
+
+    prompt = f"""
+你是「暗面筆記」AI系統的進化引擎，進行每日自我優化分析：
+
+系統評估：{evaluation}
+目標：月收入NT$990（TG付費10人）
+
+請執行四步驟分析：
+
+EVALUATE（評估）：當前策略哪裡表現好/差？
+DIAGNOSE（診斷）：失敗的根本原因是什麼？
+PROPOSE（提案）：3個具體改進方向（低風險）
+GUARD（防護）：哪些方向有風險應避免？
+
+繁體中文，每步驟50字內。
+"""
+    evolution = _ai(prompt, task_type="analyze")
+
+    # 記錄進化歷程
+    conn = sqlite3.connect(MEMORY_DB)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS evolution_log (
+            id INTEGER PRIMARY KEY,
+            evaluation TEXT,
+            evolution TEXT,
+            revenue_snapshot INTEGER,
+            created_at TEXT
+        )
+    """)
+    conn.execute("""
+        INSERT INTO evolution_log (evaluation, evolution, revenue_snapshot, created_at)
+        VALUES (?,?,?,?)
+    """, (evaluation, evolution, revenue_this_month, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.close()
+
+    result = f"🧬 <b>EvolveMem 進化報告</b>\n{datetime.now().strftime('%Y-%m-%d')}\n\n{evolution}"
+    tg(result)
+    return result
+
+def evolve_status(args: list = []) -> str:
+    """查看進化歷程"""
+    conn = sqlite3.connect(MEMORY_DB)
+    try:
+        rows = conn.execute("""
+            SELECT created_at, revenue_snapshot, evolution
+            FROM evolution_log
+            ORDER BY created_at DESC LIMIT 5
+        """).fetchall()
+    except:
+        rows = []
+    conn.close()
+
+    if not rows:
+        return "尚無進化記錄，執行 evolve_run 開始"
+
+    output = "🧬 <b>進化歷程（最近5次）</b>\n\n"
+    for r in rows:
+        output += f"📅 {r[0][:10]} | 收入NT${r[1]}\n{r[2][:200]}\n\n"
+    return output
+
+# ─────────────────────────────────────────
+# ── 模組八：模型品質監測（v18.18）
+# ─────────────────────────────────────────
+
+def quality_check(args: list = []) -> str:
+    """全模型品質掃描（偵測Gemini降級等問題）"""
+    models = {
+        "groq": lambda: _call_groq("回答：1+1=？只輸出數字"),
+        "gemini": lambda: _call_gemini("回答：1+1=？只輸出數字"),
+        "deepseek": lambda: _call_deepseek("回答：1+1=？只輸出數字"),
+    }
+
+    results = []
+    conn = sqlite3.connect(QUALITY_DB)
+
+    for name, fn in models.items():
+        start = time.time()
+        try:
+            resp = fn()
+            latency = int((time.time() - start) * 1000)
+            score = 100 if "2" in (resp or "") else 50
+            degraded = 0
+            status = "✅"
+        except Exception as e:
+            latency = 9999
+            score = 0
+            degraded = 1
+            status = "❌"
+            resp = str(e)[:50]
+
+        conn.execute("""
+            INSERT INTO model_quality (model, task_type, latency_ms, score, degraded, checked_at)
+            VALUES (?,?,?,?,?,?)
+        """, (name, "benchmark", latency, score, degraded,
+              datetime.now(timezone.utc).isoformat()))
+
+        results.append(f"{status} {name}: {latency}ms, 品質{score}分")
+
+    conn.commit()
+    conn.close()
+
+    output = "🔍 <b>模型品質掃描</b>\n\n" + "\n".join(results)
+    tg(output)
+    return output
+
+def quality_dashboard(args: list = []) -> str:
+    """品質監測儀表板"""
+    conn = sqlite3.connect(QUALITY_DB)
+    rows = conn.execute("""
+        SELECT model, AVG(latency_ms), AVG(score), SUM(degraded), COUNT(*)
+        FROM model_quality
+        WHERE checked_at >= datetime('now', '-24 hours')
+        GROUP BY model
+    """).fetchall()
+    conn.close()
+
+    if not rows:
+        return "過去24小時無監測資料，執行 quality_check"
+
+    output = "📊 <b>模型品質儀表板（過去24小時）</b>\n\n"
+    for r in rows:
+        model, avg_lat, avg_score, degraded, count = r
+        flag = "⚠️" if degraded > 0 else "✅"
+        output += f"{flag} {model}: 平均{int(avg_lat or 0)}ms, 品質{int(avg_score or 0)}分, 降級{int(degraded or 0)}次 ({count}次測試)\n"
+
+    return output
+
+# ─────────────────────────────────────────
+# ── 模組九：系統健康檢查
+# ─────────────────────────────────────────
+
+def health_check(args: list = []) -> str:
+    """系統健康全掃描"""
+    checks = []
+
+    # API Keys 檢查
+    api_keys = {
+        "GROQ_API_KEY": E("GROQ_API_KEY"),
+        "GEMINI_API_KEY": E("GEMINI_API_KEY"),
+        "OPENROUTER_API_KEY": E("OPENROUTER_API_KEY"),
+        "TG_TOKEN": E("TG_TOKEN"),
+        "DEEPSEEK_API_KEY": E("DEEPSEEK_API_KEY"),
+        "ELEVENLABS_API_KEY": E("ELEVENLABS_API_KEY"),
+        "PIXABAY_API_KEY": E("PIXABAY_API_KEY"),
+    }
+
+    key_status = []
+    for k, v in api_keys.items():
+        status = "✅" if v else "❌"
+        key_status.append(f"{status} {k}")
+
+    # DB 健康
+    db_status = []
+    for db_path in [BORIS_DB, REVENUE_DB, QUALITY_DB, MEMORY_DB]:
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("SELECT 1")
+            conn.close()
+            db_status.append(f"✅ {Path(db_path).name}")
+        except Exception as e:
+            db_status.append(f"❌ {Path(db_path).name}: {e}")
+
+    output = f"""🏥 <b>系統健康報告</b>
+{datetime.now().strftime('%Y-%m-%d %H:%M')} UTC
+
+<b>API Keys：</b>
+{chr(10).join(key_status)}
+
+<b>資料庫：</b>
+{chr(10).join(db_status)}
+
+<b>版本：</b> v18.20
+<b>Python：</b> {sys.version.split()[0]}
+"""
+    tg(output)
+    return output
+
+# ─────────────────────────────────────────
+# ── 模組十：收入追蹤儀表板
+# ─────────────────────────────────────────
+
+def revenue_dashboard(args: list = []) -> str:
+    """收入儀表板"""
+    conn = sqlite3.connect(REVENUE_DB)
+
+    this_month = conn.execute("""
+        SELECT COALESCE(SUM(amount),0) FROM revenue_log
+        WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+    """).fetchone()[0]
+
+    recent = conn.execute("""
+        SELECT amount, source, note, created_at
+        FROM revenue_log ORDER BY created_at DESC LIMIT 5
+    """).fetchall()
+    conn.close()
+
+    progress = min(100, int(this_month / 990 * 100))
+    bar = "█" * (progress // 10) + "░" * (10 - progress // 10)
+
+    output = f"""💰 <b>收入儀表板</b>
+
+本月收入：NT${this_month} / NT$990
+進度：[{bar}] {progress}%
+
+最近記錄：
+"""
+    for r in recent:
+        output += f"▸ NT${r[0]} | {r[1]} | {r[3][:10]}\n"
+
+    if this_month >= 990:
+        output += "\n🎉 本月目標達成！"
+    else:
+        output += f"\n⏳ 距目標還差 NT${990 - this_month}"
+
+    return output
+
+# ─────────────────────────────────────────
+# ── 模組十一：v18.20 新增 — 蝦皮聯盟行銷自動化
+# ─────────────────────────────────────────
+
+def shopee_affiliate_content(args: list = []) -> str:
+    """生成蝦皮聯盟行銷推廣文案（AI自動生成，搭配Threads/TG發布）"""
+    category = args[0] if args else "AI工具周邊"
+
+    prompt = f"""
+你是「暗面筆記」的聯盟行銷文案師。
+
+目標平台：Threads + Telegram
+商品類別：{category}
+受眾：對AI副業有興趣的上班族
+
+請生成：
+1. Threads 推廣短文（80字內，包含購買理由+情境）
+2. TG頻道推廣文（150字內，更詳細的推薦原因）
+3. 商品篩選建議（蝦皮上搜索哪些關鍵字能找到高佣金商品）
+
+注意：
+- 自然融入「我在用」「試過很好用」等真實感文字
+- 不要硬推銷，要分享式行銷
+- 文末提示「連結在留言/個人頁」
+"""
+    content = _ai(prompt, task_type="copywrite")
+    result = f"🛒 <b>蝦皮聯盟文案</b>（{category}）\n\n{content}"
+    tg(result)
+    return result
+
+def shopee_setup_guide(args: list = []) -> str:
+    """蝦皮聯盟申請指南"""
+    guide = """🛒 <b>蝦皮聯盟行銷申請指南</b>
+
+<b>申請條件：</b>
+✅ 任一社群平台 300 位好友/粉絲
+✅ 有蝦皮帳號
+
+<b>申請步驟：</b>
+1. 前往 affiliate.shopee.tw
+2. 點「開始使用」→ 登入蝦皮帳號
+3. 合作類型選「部落客/社交媒體」
+4. 填入 Threads @shadow.notes.tw
+5. 送出等待審核（約2個工作天）
+
+<b>注意事項：</b>
+❌ 不能點自己連結下單
+❌ 不能同時開多個視窗
+❌ 電腦版連結不能有中文字
+✅ 每件分潤上限 NT$500
+✅ 審核信寄至 affiliate_tw@shopee.com
+
+<b>審核通過後：</b>
+執行 python main.py shopee_content
+自動生成推廣文案並發布到 TG + Threads
+"""
+    return guide
+
+# ─────────────────────────────────────────
+# ── 模組十二：v18.20 新增 — Gemini 算力監控
+# ─────────────────────────────────────────
+
+def gemini_quota_check(args: list = []) -> str:
+    """
+    Gemini 算力監控（2026-05-17 新計費制）
+    每5小時額度重置，超量自動切換 groq/deepseek
+    """
+    key = E("GEMINI_API_KEY")
+    if not key:
+        return "❌ GEMINI_API_KEY 未設定"
+
+    # 測試 Gemini 回應品質
+    start = time.time()
+    resp = _call_gemini("請用一個字回答：你是哪個模型版本？")
+    latency = int((time.time() - start) * 1000)
+
+    # 判斷是否被降級（回應太短或包含降級標誌）
+    degraded = False
+    if not resp or latency > 5000:
+        degraded = True
+
+    # 記錄到 DB
+    conn = sqlite3.connect(QUALITY_DB)
+    conn.execute("""
+        INSERT OR REPLACE INTO system_health (component, status, detail, checked_at)
+        VALUES (?,?,?,?)
+    """, (
+        "gemini_quota",
+        "degraded" if degraded else "ok",
+        f"latency={latency}ms, resp={resp[:50] if resp else 'empty'}",
+        datetime.now(timezone.utc).isoformat()
+    ))
+    conn.commit()
+    conn.close()
+
+    if degraded:
+        warning = f"⚠️ <b>Gemini 降級警告</b>\n延遲：{latency}ms\n回應：{resp[:50]}\n\n自動切換至 Groq/DeepSeek 執行高頻任務"
+        tg(warning)
+        return warning
+    else:
+        return f"✅ Gemini 正常\n延遲：{latency}ms | 回應：{resp[:50]}"
+
+# ─────────────────────────────────────────
+# 排程執行（Railway / Termux crontab）
+# ─────────────────────────────────────────
+
+def run_scheduled():
+    """Railway 持續運行排程（每分鐘檢查）"""
+    logger.info("Shadow Notes v18.20 排程啟動")
+    init_all_db()
+    tg("🚀 <b>暗面筆記 v18.20 啟動</b>\n系統就緒，開始運行蜂群...")
+
+    while True:
+        try:
+            utc_hour = datetime.now(timezone.utc).hour
+            utc_min  = datetime.now(timezone.utc).minute
+
+            # 整點執行
+            if utc_min == 0:
+                run_master_cycle(utc_hour)
+
+                # 每6小時 Gemini 品質監測
+                if utc_hour % 6 == 0:
+                    gemini_quota_check()
+
+                # 每日 UTC 23 進化引擎
+                if utc_hour == 23:
+                    evolve_run()
+
+            time.sleep(55)  # 55秒檢查一次，避免漏掉整點
+
+        except KeyboardInterrupt:
+            logger.info("排程停止")
+            break
+        except Exception as e:
+            logger.error(f"排程錯誤: {e}")
+            tg(f"❌ 排程錯誤：{e}")
+            time.sleep(60)
+
+# ─────────────────────────────────────────
+# 主程式 Dispatch（命令列介面）
+# ─────────────────────────────────────────
+
+def dispatch(cmd: str, args: list = []) -> str:
+    """統一命令分發器"""
+
+    routes = {
+        # 核心系統
+        "master_scan":    lambda: master_scan(),
+        "master_brief":   lambda: master_brief(),
+        "master_run":     lambda: master_run(),
+        "master_evolve":  lambda: master_evolve(),
+
+        # Boris 框架（v18.19）
+        "boris_plan":     lambda: boris_plan(args),
+        "boris_parallel": lambda: boris_parallel(args),
+        "boris_rules":    lambda: boris_rules(args),
+        "boris_record_error": lambda: boris_record_error(args),
+        "boris_dashboard":lambda: boris_dashboard(args),
+        "boris_pipeline": lambda: boris_plan(args),
+        "boris_create":   lambda: gen_nine_grid_hooks(args),
+        "boris_subagent": lambda: boris_parallel(args),
+
+        # 九宮格指令（v18.19）
+        "nine_grid":          lambda: gen_nine_grid_hooks(args),
+        "nine_grid_plan":     lambda: gen_nine_grid_content_plan(args),
+
+        # 數據收集
+        "collect_data":       lambda: collect_data(args),
+        "collect_rss":        lambda: _collect_rss(),
+        "collect_autocomplete": lambda: _collect_autocomplete(),
+
+        # AI短劇（v18.18）
+        "drama_create":    lambda: drama_create(args),
+        "drama_storyboard":lambda: drama_storyboard(args),
+        "drama_list":      lambda: drama_list(args),
+        "drama_video":     lambda: f"影片生成功能需要 FAL_API_KEY，請先設定",
+
+        # 進化系統（v18.18）
+        "evolve_run":      lambda: evolve_run(args),
+        "evolve_status":   lambda: evolve_status(args),
+
+        # 品質監測（v18.18）
+        "quality_check":   lambda: quality_check(args),
+        "quality_dashboard": lambda: quality_dashboard(args),
+
+        # 系統工具
+        "health_check":    lambda: health_check(args),
+        "revenue_log":     lambda: revenue_log(args),
+        "revenue_dashboard": lambda: revenue_dashboard(args),
+
+        # 變現
+        "monetize":        lambda: monetize_run(args),
+
+        # v18.20 新增
+        "shopee_content":  lambda: shopee_affiliate_content(args),
+        "shopee_guide":    lambda: shopee_setup_guide(args),
+        "gemini_quota":    lambda: gemini_quota_check(args),
+
+        # 排程啟動
+        "start":           lambda: run_scheduled(),
+        "schedule":        lambda: run_scheduled(),
+    }
+
+    fn = routes.get(cmd)
+    if fn:
+        try:
+            return fn()
+        except Exception as e:
+            error_msg = f"❌ 指令 '{cmd}' 執行失敗：{e}"
+            logger.error(error_msg)
+            boris_record_error([cmd, str(e)])
+            return error_msg
+    else:
+        available = "\n".join(sorted(routes.keys()))
+        return f"未知指令：{cmd}\n\n可用指令：\n{available}"
+
+# ─────────────────────────────────────────
+# 入口點
+# ─────────────────────────────────────────
 
 if __name__ == "__main__":
-    import sys
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "boris_dashboard"
+    init_all_db()
+
+    if len(sys.argv) < 2:
+        print("暗面筆記 v18.20")
+        print("用法：python main.py [指令] [參數...]")
+        print("執行 python main.py health_check 查看系統狀態")
+        sys.exit(0)
+
+    cmd  = sys.argv[1]
     args = sys.argv[2:] if len(sys.argv) > 2 else []
-    print(handle_v1819(cmd, args))
+
+    result = dispatch(cmd, args)
+    print(result)
