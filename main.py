@@ -1243,16 +1243,45 @@ def gemini_quota_check(args: list = []) -> str:
 # 排程執行（Railway / Termux crontab）
 # ─────────────────────────────────────────
 
+def _http_keepalive():
+    """Railway Web Service 需要綁定 PORT，否則會被判定為 crash"""
+    import http.server
+    port = int(E("PORT", "8080"))
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Shadow Notes v18.20 - Running")
+        def log_message(self, *args):
+            pass  # 靜音 HTTP log
+    server = http.server.HTTPServer(("0.0.0.0", port), Handler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    logger.info(f"HTTP keepalive 啟動於 port {port}")
+
 def run_scheduled():
-    """Railway 持續運行排程（每分鐘檢查）"""
+    """Railway 持續運行排程（Web Service 模式）"""
     logger.info("Shadow Notes v18.20 排程啟動")
     init_all_db()
-    tg("🚀 <b>暗面筆記 v18.20 啟動</b>\n系統就緒，開始運行蜂群...")
+
+    # Railway Web Service 需要 HTTP server 保持存活
+    _http_keepalive()
+
+    # 啟動後立刻執行一次，不等整點
+    utc_hour = datetime.now(timezone.utc).hour
+    logger.info(f"啟動立即執行 UTC{utc_hour:02d}")
+    try:
+        run_master_cycle(utc_hour)
+    except Exception as e:
+        logger.error(f"啟動執行錯誤: {e}")
+
+    tg("🚀 <b>暗面筆記 v18.20 啟動</b>\n系統就緒，蜂群開始運行")
 
     while True:
         try:
-            utc_hour = datetime.now(timezone.utc).hour
-            utc_min  = datetime.now(timezone.utc).minute
+            now = datetime.now(timezone.utc)
+            utc_hour = now.hour
+            utc_min  = now.minute
 
             # 整點執行
             if utc_min == 0:
@@ -1266,7 +1295,9 @@ def run_scheduled():
                 if utc_hour == 23:
                     evolve_run()
 
-            time.sleep(55)  # 55秒檢查一次，避免漏掉整點
+                time.sleep(61)  # 整點後等61秒，避免同一整點重複觸發
+            else:
+                time.sleep(30)  # 非整點每30秒檢查一次
 
         except KeyboardInterrupt:
             logger.info("排程停止")
