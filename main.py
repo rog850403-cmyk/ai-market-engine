@@ -684,6 +684,10 @@ def run_master_cycle(utc_hour: int = None) -> str:
     if utc_hour in [3, 9, 15, 21]:
         r = monetize_run()
         results.append(f"A6變現師：{r[:100]}")
+    # A6+ 全自動聯盟發文：UTC 7, 12, 18（配合台灣早/中/晚時間）
+    if utc_hour in [7, 12, 18]:
+        r = auto_affiliate_post([])
+        results.append(f"A6+聯盟發文：{r[:80]}")
 
     # A7 進化引擎：UTC 22, 23
     if utc_hour in [22, 23]:
@@ -1368,6 +1372,11 @@ def dispatch(cmd: str, args: list = []) -> str:
         "gemini_quota":    lambda: gemini_quota_check(args),
 
         # 排程啟動
+        # 全自動聯盟發文（v18.21）
+        "auto_post":       lambda: auto_affiliate_post(args),
+        "affiliate_post":  lambda: auto_affiliate_post(args),
+        "affiliate_dashboard": lambda: affiliate_dashboard(args),
+
         "start":           lambda: run_scheduled(),
         "schedule":        lambda: run_scheduled(),
     }
@@ -1403,3 +1412,212 @@ if __name__ == "__main__":
 
     result = dispatch(cmd, args)
     print(result)
+
+# ─────────────────────────────────────────
+# ── 模組十三：全自動聯盟發文引擎（v18.21）
+# ─────────────────────────────────────────
+
+# PartnerStack 固定連結庫（從 Railway Variables 讀取，fallback 用預設）
+AFFILIATE_LINKS = {
+    "elevenlabs": E("ELEVENLABS_AFF_URL", "https://try.elevenlabs.io/shadownotestw"),
+    "jasper":     E("JASPER_AFF_URL",     "https://www.jasper.ai/?via=shadownotes"),
+    "invideo":    E("INVIDEO_AFF_URL",    "https://invideo.io/?ref=shadownotes"),
+    "partnerstack": E("PARTNERSTACK_AFF_URL", "https://app.partnerstack.com"),
+}
+
+# 蝦皮熱銷商品類別 × 關鍵字對應
+SHOPEE_HOT_CATEGORIES = {
+    "AI工具":   "AI 生產力工具",
+    "3C":      "藍牙耳機 無線",
+    "美妝":    "防曬乳 美白",
+    "保健":    "益生菌 膠原蛋白",
+    "居家":    "收納盒 掃地機器人",
+    "運動":    "瑜伽墊 運動手環",
+    "書籍":    "理財 投資 副業",
+}
+
+def _get_shopee_search_link(keyword: str) -> str:
+    """生成蝦皮搜尋連結（帶 affiliate ID）"""
+    import urllib.parse
+    affiliate_id = E("SHOPEE_AFFILIATE_ID", "")
+    encoded = urllib.parse.quote(keyword)
+    base = f"https://shopee.tw/search?keyword={encoded}&sortBy=sales"
+    if affiliate_id:
+        return f"{base}&af_id={affiliate_id}"
+    return base
+
+def _pick_affiliate_link(topic: str) -> tuple:
+    """根據今日話題自動選最相關的聯盟連結"""
+    topic_lower = topic.lower()
+
+    # AI 工具類 → PartnerStack 高佣金
+    if any(kw in topic_lower for kw in ["ai", "配音", "影片", "寫作", "自動化", "工具"]):
+        if "配音" in topic_lower or "語音" in topic_lower:
+            return ("ElevenLabs AI配音工具", AFFILIATE_LINKS["elevenlabs"], "美金recurring")
+        elif "影片" in topic_lower or "video" in topic_lower:
+            return ("InVideo AI影片工具", AFFILIATE_LINKS["invideo"], "美金50%")
+        else:
+            return ("Jasper AI寫作工具", AFFILIATE_LINKS["jasper"], "美金30%recurring")
+
+    # 其他話題 → 蝦皮搜尋連結（台幣）
+    for cat, kw in SHOPEE_HOT_CATEGORIES.items():
+        if cat.lower() in topic_lower:
+            link = _get_shopee_search_link(kw)
+            return (f"蝦皮{cat}精選", link, "台幣1-10%")
+
+    # 預設 → 蝦皮熱銷
+    link = _get_shopee_search_link("熱銷商品")
+    return ("蝦皮今日熱銷", link, "台幣分潤")
+
+def auto_affiliate_post(args: list = []) -> str:
+    """
+    全自動聯盟發文引擎
+    流程：抓市場熱點 → 匹配連結 → AI生成文案 → 發布 Threads + TG
+    """
+    # Step 1: 抓今日熱點關鍵字
+    autocomplete = _collect_autocomplete()
+    lines = [l for l in autocomplete.split("\n") if l.strip() and not l.startswith("🔍")]
+    today_topic = lines[0] if lines else "AI副業自動化"
+
+    # Step 2: 匹配最相關聯盟連結
+    product_name, aff_link, commission_type = _pick_affiliate_link(today_topic)
+
+    # Step 3: AI 生成文案（九宮格鉤子風格）
+    prompt = f"""
+你是「暗面筆記 @shadow.notes.tw」的內容寫手。
+
+今日熱點話題：{today_topic}
+推薦產品：{product_name}
+連結類型：{commission_type}
+
+請生成一篇 Threads 貼文（80字內），要求：
+1. 前兩行是鉤子（製造好奇或痛點）
+2. 自然帶出推薦產品（不要硬推銷）
+3. 最後一行：「連結在首頁 bio 👆」
+4. 加上 3 個 hashtag（#AI副業 #暗面筆記 + 1個相關的）
+5. 繁體中文，口語化
+
+只輸出貼文內容，不要任何說明。
+"""
+    post_text = _ai(prompt, task_type="copywrite")
+    if not post_text:
+        post_text = f"今天發現一個超實用的工具 👀\n用了之後直接省下一半時間\n連結在首頁 bio 👆\n#AI副業 #暗面筆記 #工具推薦"
+
+    # Step 4: 組裝完整發文（含連結）
+    full_post = f"{post_text}\n\n🔗 {aff_link}"
+
+    # Step 5: 發布到 TG 頻道
+    tg_result = tg_paid(f"📢 <b>今日推薦</b>\n\n{full_post}")
+
+    # Step 6: 發布到 Threads（透過 Meta API）
+    threads_result = _post_to_threads(full_post)
+
+    # 記錄到 DB
+    conn = sqlite3.connect(REVENUE_DB)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS affiliate_posts (
+            id INTEGER PRIMARY KEY,
+            topic TEXT,
+            product TEXT,
+            link TEXT,
+            commission_type TEXT,
+            post_text TEXT,
+            tg_sent INTEGER,
+            threads_sent INTEGER,
+            created_at TEXT
+        )
+    """)
+    conn.execute("""
+        INSERT INTO affiliate_posts
+        (topic, product, link, commission_type, post_text, tg_sent, threads_sent, created_at)
+        VALUES (?,?,?,?,?,?,?,?)
+    """, (today_topic, product_name, aff_link, commission_type,
+          post_text[:500], int(tg_result), int(bool(threads_result)),
+          datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.close()
+
+    result = f"""✅ <b>聯盟發文完成</b>
+
+話題：{today_topic}
+產品：{product_name}（{commission_type}）
+TG：{'✅' if tg_result else '❌'}
+Threads：{'✅' if threads_result else '❌（需確認 META_ACCESS_TOKEN）'}
+
+內容預覽：
+{post_text[:200]}"""
+
+    logger.info(f"聯盟發文：{product_name} | {commission_type}")
+    return result
+
+def _post_to_threads(text: str) -> bool:
+    """發布到 Threads（Meta Graph API）"""
+    import urllib.request
+    access_token = E("META_ACCESS_TOKEN")
+    user_id = E("THREADS_USER_ID")
+
+    if not access_token or not user_id:
+        logger.warning("META_ACCESS_TOKEN 或 THREADS_USER_ID 未設定")
+        return False
+
+    try:
+        # Step 1: 建立 media container
+        data = json.dumps({
+            "text": text[:500],
+            "media_type": "TEXT",
+            "access_token": access_token
+        }).encode()
+        req = urllib.request.Request(
+            f"https://graph.threads.net/v1.0/{user_id}/threads",
+            data=data,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            resp = json.loads(r.read())
+            creation_id = resp.get("id")
+
+        if not creation_id:
+            return False
+
+        # Step 2: 發布
+        data2 = json.dumps({
+            "creation_id": creation_id,
+            "access_token": access_token
+        }).encode()
+        req2 = urllib.request.Request(
+            f"https://graph.threads.net/v1.0/{user_id}/threads_publish",
+            data=data2,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req2, timeout=15) as r2:
+            resp2 = json.loads(r2.read())
+            return bool(resp2.get("id"))
+
+    except Exception as e:
+        logger.error(f"Threads 發布失敗: {e}")
+        return False
+
+def affiliate_dashboard(args: list = []) -> str:
+    """聯盟發文歷史儀表板"""
+    conn = sqlite3.connect(REVENUE_DB)
+    try:
+        rows = conn.execute("""
+            SELECT product, commission_type, tg_sent, threads_sent, created_at
+            FROM affiliate_posts
+            ORDER BY created_at DESC LIMIT 10
+        """).fetchall()
+        total = conn.execute("SELECT COUNT(*) FROM affiliate_posts").fetchone()[0]
+    except:
+        rows = []
+        total = 0
+    conn.close()
+
+    if not rows:
+        return "尚無發文記錄，執行 python main.py auto_post 開始"
+
+    output = f"📊 <b>聯盟發文紀錄（共{total}篇）</b>\n\n"
+    for r in rows:
+        tg_icon = "✅" if r[2] else "❌"
+        th_icon = "✅" if r[3] else "❌"
+        output += f"▸ {r[0]}（{r[1]}）\n  TG:{tg_icon} Threads:{th_icon} | {r[4][:10]}\n\n"
+    return output
