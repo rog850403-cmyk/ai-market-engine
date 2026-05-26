@@ -101,35 +101,33 @@ def _call_groq(prompt: str) -> str:
     if not key:
         return ""
     import urllib.request
-    data = json.dumps({
-        "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 1500,
-        "temperature": 0.7
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.groq.com/openai/v1/chat/completions",
-        data=data,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        resp = json.loads(r.read())
-        return resp["choices"][0]["message"]["content"].strip()
+    for model in ["llama-3.1-8b-instant","llama3-8b-8192","gemma2-9b-it","mixtral-8x7b-32768"]:
+        try:
+            data = json.dumps({"model":model,"messages":[{"role":"user","content":prompt}],"max_tokens":1500,"temperature":0.7}).encode()
+            req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions",data=data,headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                resp = json.loads(r.read())
+                return resp["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            logger.warning(f"Groq {model} 失敗: {e}")
+    return ""
 
 def _call_gemini(prompt: str) -> str:
     key = E("GEMINI_API_KEY")
     if not key:
         return ""
     import urllib.request
-    data = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 1500, "temperature": 0.7}
-    }).encode()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        resp = json.loads(r.read())
-        return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+    for model in ["gemini-1.5-flash","gemini-1.5-flash-8b","gemini-2.0-flash-lite"]:
+        try:
+            data = json.dumps({"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":1500,"temperature":0.7}}).encode()
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                resp = json.loads(r.read())
+                return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception as e:
+            logger.warning(f"Gemini {model} 失敗: {e}")
+    return ""
 
 def _call_deepseek(prompt: str) -> str:
     key = E("DEEPSEEK_API_KEY")
