@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-暗面筆記 Shadow Notes — 整合主程式 v18.20
-整合版本：v18.5 ~ v18.19 所有模組 + v18.20 新增功能
+暗面筆記 Shadow Notes — 整合主程式 v18.22
+整合版本：v18.5 ~ v18.21 所有模組 + v18.22 Threads API修正
 部署：Railway / Termux Samsung S9+
 作者：Hsuan (廖志軒)
-更新：2026-05-25
+更新：2026-05-26
 """
 
 import os
@@ -25,7 +25,7 @@ from typing import Optional, Callable
 # ─────────────────────────────────────────
 # 基礎設定
 # ─────────────────────────────────────────
-logger = logging.getLogger("ShadowNotes.v1820")
+logger = logging.getLogger("ShadowNotes.v1822")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -1371,6 +1371,7 @@ def dispatch(cmd: str, args: list = []) -> str:
 
         # 排程啟動
         # 全自動聯盟發文（v18.21）
+        "gumroad_ebook":   lambda: gumroad_ebook_outline(args),
         "auto_post":       lambda: auto_affiliate_post(args),
         "affiliate_post":  lambda: auto_affiliate_post(args),
         "affiliate_dashboard": lambda: affiliate_dashboard(args),
@@ -1549,8 +1550,10 @@ Threads：{'✅' if threads_result else '❌（需確認 META_ACCESS_TOKEN）'}
     return result
 
 def _post_to_threads(text: str) -> bool:
-    """發布到 Threads（Meta Graph API）"""
-    import urllib.request
+    """發布到 Threads（Meta Graph API）
+    v18.22 修正：access_token 必須放在 URL query string，不能放 JSON body
+    """
+    import urllib.request, urllib.parse
     access_token = E("META_ACCESS_TOKEN")
     user_id = E("THREADS_USER_ID")
 
@@ -1559,14 +1562,14 @@ def _post_to_threads(text: str) -> bool:
         return False
 
     try:
-        # Step 1: 建立 media container
+        # Step 1: 建立 media container（access_token 在 URL，不在 body）
         data = json.dumps({
             "text": text[:500],
-            "media_type": "TEXT",
-            "access_token": access_token
+            "media_type": "TEXT"
         }).encode()
+        token_param = urllib.parse.urlencode({"access_token": access_token})
         req = urllib.request.Request(
-            f"https://graph.threads.net/v1.0/{user_id}/threads",
+            f"https://graph.threads.net/v1.0/{user_id}/threads?{token_param}",
             data=data,
             headers={"Content-Type": "application/json"}
         )
@@ -1575,25 +1578,71 @@ def _post_to_threads(text: str) -> bool:
             creation_id = resp.get("id")
 
         if not creation_id:
+            logger.error(f"Threads container 建立失敗，回應: {resp}")
             return False
 
-        # Step 2: 發布
+        # Step 2: 發布（access_token 在 URL，不在 body）
         data2 = json.dumps({
-            "creation_id": creation_id,
-            "access_token": access_token
+            "creation_id": creation_id
         }).encode()
         req2 = urllib.request.Request(
-            f"https://graph.threads.net/v1.0/{user_id}/threads_publish",
+            f"https://graph.threads.net/v1.0/{user_id}/threads_publish?{token_param}",
             data=data2,
             headers={"Content-Type": "application/json"}
         )
         with urllib.request.urlopen(req2, timeout=15) as r2:
             resp2 = json.loads(r2.read())
-            return bool(resp2.get("id"))
+            pub_id = resp2.get("id")
+            if pub_id:
+                logger.info(f"Threads 發文成功，ID: {pub_id}")
+            return bool(pub_id)
 
     except Exception as e:
         logger.error(f"Threads 發布失敗: {e}")
         return False
+
+def gumroad_ebook_outline(args: list = []) -> str:
+    """
+    生成 Gumroad 電子書目錄與行銷文案（v18.22新增）
+    用法：python main.py gumroad_ebook [主題]
+    預設主題：AI自動化副業入門
+    """
+    topic = " ".join(args) if args else "AI自動化副業入門"
+    prompt = f"""你是一位台灣暢銷電子書作者，擅長 AI 工具與副業變現。
+
+請為以下主題生成完整電子書企劃：
+主題：《{topic}》
+
+輸出格式：
+1. 電子書標題（吸引人，繁體中文）
+2. 副標題（說明痛點或效益）
+3. 目標讀者（3-5字描述）
+4. 定價建議（NT$199/299/499 三個方案的理由）
+5. 目錄（6-8章，每章30字說明）
+6. Gumroad 商品描述（200字，繁體中文，強調痛點→解法）
+7. Threads 宣傳文案（80字，9宮格鉤子風格）
+
+注意：
+- 所有內容繁體中文
+- 定價要有說服力的理由
+- 目錄要讓讀者感覺「買了值回票價」
+"""
+    result = _ai(prompt, task_type="creative")
+    if not result:
+        return "❌ AI 生成失敗，請稍後重試"
+    
+    output = f"""📚 <b>電子書企劃：{topic}</b>
+
+{result}
+
+━━━━━━━━━━━━━━━━
+📌 下一步：
+1. 把以上內容複製到 Google Docs 寫成 PDF
+2. 上傳至 rogue03.gumroad.com
+3. 把 Gumroad 連結加入 Railway GUMROAD_PRODUCT_URL
+4. 執行 python main.py auto_post 開始推廣
+"""
+    return output
 
 def affiliate_dashboard(args: list = []) -> str:
     """聯盟發文歷史儀表板"""
