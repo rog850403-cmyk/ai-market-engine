@@ -1394,25 +1394,6 @@ def dispatch(cmd: str, args: list = []) -> str:
         return f"未知指令：{cmd}\n\n可用指令：\n{available}"
 
 # ─────────────────────────────────────────
-# 入口點
-# ─────────────────────────────────────────
-
-if __name__ == "__main__":
-    init_all_db()
-
-    if len(sys.argv) < 2:
-        print("暗面筆記 v18.20")
-        print("用法：python main.py [指令] [參數...]")
-        print("執行 python main.py health_check 查看系統狀態")
-        sys.exit(0)
-
-    cmd  = sys.argv[1]
-    args = sys.argv[2:] if len(sys.argv) > 2 else []
-
-    result = dispatch(cmd, args)
-    print(result)
-
-# ─────────────────────────────────────────
 # ── 模組十三：全自動聯盟發文引擎（v18.21）
 # ─────────────────────────────────────────
 
@@ -1668,3 +1649,22 @@ def affiliate_dashboard(args: list = []) -> str:
         th_icon = "✅" if r[3] else "❌"
         output += f"▸ {r[0]}（{r[1]}）\n  TG:{tg_icon} Threads:{th_icon} | {r[4][:10]}\n\n"
     return output
+    
+# ============================================================
+# 程式入口
+# ============================================================
+
+if __name__ == "__main__":
+    init_all_db()
+
+    if len(sys.argv) < 2:
+        print("暗面筆記 v18.20")
+        print("用法：python main.py [指令] [參數...]")
+        print("執行 python main.py health_check 查看系統狀態")
+        sys.exit(0)
+
+    cmd = sys.argv[1]
+    args = sys.argv[2:] if len(sys.argv) > 2 else []
+
+    result = dispatch(cmd, args)
+    print(result)
