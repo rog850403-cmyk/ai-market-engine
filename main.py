@@ -41,6 +41,8 @@ REVENUE_DB  = "/tmp/revenue.db"
 QUALITY_DB  = "/tmp/quality_monitor.db"
 FEEDBACK_DB = "/tmp/feedback.db"
 
+SYSTEM_MODE = E("SYSTEM_MODE", "intelligence")
+
 # Telegram
 TG_TOKEN    = E("TG_TOKEN")
 TG_CHAT_ID  = E("TG_CHAT_ID")
@@ -737,11 +739,26 @@ def run_master_cycle(utc_hour: int = None) -> str:
     if utc_hour in [3, 9, 15, 21]:
         r = monetize_run()
         results.append(f"A6變現師：{r[:100]}")
-    # A6+ 全自動聯盟發文：UTC 7, 12, 18（配合台灣早/中/晚時間）
-    if utc_hour in [7, 12, 18]:
-        r = auto_affiliate_post([])
-        results.append(f"A6+聯盟發文：{r[:80]}")
+    # 已暫停：目前系統進入 Market Intelligence / Feedback Collection Mode
+    # 市場情報模式
 
+if SYSTEM_MODE == "intelligence":
+    r = market_intelligence_cycle([])
+    results.append(f"市場情報:{r[:100]}")
+
+# 驗證模式
+
+elif SYSTEM_MODE == "validation":
+    logger.info("Validation Mode")
+
+# 擴張模式
+
+elif SYSTEM_MODE == "scaling":
+
+    if utc_hour in [7,12,18]:
+        r = auto_affiliate_post([])
+        results.append(f"推廣:{r[:80]}")
+    
     # A7 進化引擎：UTC 22, 23
     if utc_hour in [22, 23]:
         r = evolve_run()
@@ -753,6 +770,126 @@ def run_master_cycle(utc_hour: int = None) -> str:
         return summary
     return f"UTC{utc_hour:02d}: 無排程任務"
 
+
+    def market_intelligence_cycle(args: list = []) -> str:
+    """市場情報循環"""
+
+    market_data = collect_data([])
+
+    prompt = f"""
+你是 AI Compound Revenue System 的多模型決策委員會。
+
+系統目標：
+不是流量最大化，而是最快驗證收入、長期複利收益最大化。
+
+目前模式：
+SYSTEM_MODE = intelligence
+只收集、分析、決策，不自動發文。
+
+目前資產：
+1. 已有 Threads 帳號，但定位是感情內容
+2. 不應該為了短期測試破壞既有帳號定位
+3. 系統可未來新增新帳號、新平台、新國家
+4. 目前優先找最快變現機會
+
+市場資料：
+{market_data}
+
+請用多AI決策委員會角度，輸出 JSON。
+
+格式必須完全如下：
+
+{{
+  "top_opportunities": [
+    {{
+      "rank": 1,
+      "topic": "主題",
+      "pain_score": 0-100,
+      "urgency_score": 0-100,
+      "revenue_score": 0-100,
+      "competition_score": 0-100,
+      "speed_to_cash_score": 0-100,
+      "compound_score": 0-100,
+      "recommended_country": "Taiwan / Global / Japan / US / etc",
+      "recommended_language": "Traditional Chinese / English / Japanese / etc",
+      "platform_strategy": "single_platform / multi_platform",
+      "recommended_platforms": ["Threads", "YouTube", "TikTok"],
+      "primary_platform": "最優先平台",
+      "use_existing_emotion_account": true/false,
+      "need_new_account": true/false,
+      "new_account_positioning": "如果需要新帳號，帳號定位",
+      "best_monetization": "最快變現方式",
+      "first_product": "第一個產品或服務",
+      "risk": "主要風險",
+      "next_action": "下一步行動"
+    }}
+  ],
+  "final_decision": {{
+    "best_topic": "最推薦主題",
+    "best_country": "最推薦國家",
+    "best_language": "最推薦語言",
+    "platform_mode": "single_platform / multi_platform",
+    "primary_platform": "主平台",
+    "secondary_platforms": ["輔助平台1", "輔助平台2"],
+    "account_strategy": "use_existing_account / create_new_account / collect_only",
+    "reason": "為什麼這樣選",
+    "next_7_days_plan": ["Day1", "Day2", "Day3", "Day4", "Day5", "Day6", "Day7"]
+  }}
+}}
+
+評估規則：
+1. 痛點越痛、越急、越願意付錢，分數越高
+2. 流量大但不付錢，分數不能太高
+3. 如果主題不是感情，原則上不要使用現有感情 Threads 帳號
+4. 但如果多AI判斷使用現有帳號 ROI 明顯高於風險，可以建議使用，並說明原因
+5. 單平台或多平台由你判斷，不要固定
+6. 國家與語言由你判斷，不要固定台灣
+7. 最終答案必須偏向最快變現，而不是粉絲成長
+8. 只輸出 JSON，不要輸出其他文字
+"""
+
+    analysis = _ai(prompt, task_type="strategy")
+
+if not analysis:
+    return "❌ 分析失敗"
+
+try:
+    decision_data = json.loads(analysis)
+except Exception:
+    decision_data = {
+        "raw_analysis": analysis
+    }
+
+conn = sqlite3.connect(FEEDBACK_DB)
+
+    conn = sqlite3.connect(FEEDBACK_DB)
+
+    conn.execute("""
+        INSERT INTO learning_patterns
+        (
+            topic,
+            hook,
+            platform,
+            result_score,
+            revenue,
+            pattern_summary,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        "market_intelligence",
+        "auto_market_scan",
+        "multi_platform",
+        0,
+        0,
+        json.dumps(decision_data, ensure_ascii=False)[:2000],
+        datetime.now(timezone.utc).isoformat()
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return analysis
 def master_brief() -> str:
     """A2 分析師：今日 AI 簡報"""
     market = _collect_autocomplete()
