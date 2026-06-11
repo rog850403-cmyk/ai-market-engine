@@ -1585,6 +1585,43 @@ Threads：{'✅' if threads_result else '❌（需確認 META_ACCESS_TOKEN）'}
     logger.info(f"聯盟發文：{product_name} | {commission_type}")
     return result
 
+
+def record_platform_post(platform: str, post_id: str, topic: str, content: str, product_url: str = "") -> bool:
+    """記錄已發布貼文"""
+
+    try:
+        conn = sqlite3.connect(FEEDBACK_DB)
+
+        conn.execute("""
+            INSERT OR IGNORE INTO platform_posts
+            (
+                platform,
+                post_id,
+                topic,
+                content,
+                product_url,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            platform,
+            str(post_id),
+            topic,
+            content[:1000],
+            product_url,
+            datetime.now(timezone.utc).isoformat()
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return True
+
+    except Exception as e:
+        logger.error(f"record_platform_post error: {e}")
+        return False
+
+
 def _post_to_threads(text: str) -> bool:
     """發布到 Threads（Meta Graph API）
     v18.22 修正：access_token 必須放在 URL query string，不能放 JSON body
