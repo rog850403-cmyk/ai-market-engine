@@ -39,6 +39,7 @@ RULES_FILE  = "/tmp/CLAUDE_rules.json"   # CLAUDE.md 錯誤規則庫
 MEMORY_DB   = "/tmp/agent_memory.db"
 REVENUE_DB  = "/tmp/revenue.db"
 QUALITY_DB  = "/tmp/quality_monitor.db"
+FEEDBACK_DB = "/tmp/feedback.db"
 
 # Telegram
 TG_TOKEN    = E("TG_TOKEN")
@@ -243,6 +244,60 @@ def init_all_db():
             grid2_center TEXT,
             created_at TEXT,
             score INTEGER DEFAULT 0
+        );
+    """)
+    conn.commit()
+    conn.close()
+    
+    # Feedback DB：平台回覆與數據回收
+    conn = sqlite3.connect(FEEDBACK_DB)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS platform_posts (
+            id INTEGER PRIMARY KEY,
+            platform TEXT,
+            post_id TEXT,
+            topic TEXT,
+            content TEXT,
+            product_url TEXT,
+            created_at TEXT,
+            UNIQUE(platform, post_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS platform_metrics (
+            id INTEGER PRIMARY KEY,
+            platform TEXT,
+            post_id TEXT,
+            likes INTEGER DEFAULT 0,
+            comments INTEGER DEFAULT 0,
+            shares INTEGER DEFAULT 0,
+            saves INTEGER DEFAULT 0,
+            clicks INTEGER DEFAULT 0,
+            replies INTEGER DEFAULT 0,
+            collected_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS platform_comments (
+            id INTEGER PRIMARY KEY,
+            platform TEXT,
+            post_id TEXT,
+            comment_id TEXT,
+            author TEXT,
+            text TEXT,
+            sentiment TEXT,
+            intent TEXT,
+            created_at TEXT,
+            UNIQUE(platform, comment_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS learning_patterns (
+            id INTEGER PRIMARY KEY,
+            topic TEXT,
+            hook TEXT,
+            platform TEXT,
+            result_score INTEGER,
+            revenue INTEGER DEFAULT 0,
+            pattern_summary TEXT,
+            created_at TEXT
         );
     """)
     conn.commit()
