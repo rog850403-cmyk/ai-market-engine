@@ -873,7 +873,7 @@ SYSTEM_MODE = intelligence
 8. 只輸出 JSON，不要輸出其他文字
 """
 
-     analysis = _ai(prompt, task_type="strategy")
+    analysis = _ai(prompt, task_type="strategy")
     
         if not analysis:
             return "❌ 分析失敗"
@@ -884,8 +884,9 @@ SYSTEM_MODE = intelligence
             decision_data = {
                 "raw_analysis": analysis
             }
-    
-        conn = sqlite3.connect(FEEDBACK_DB)
+                }
+        
+            conn = sqlite3.connect(FEEDBACK_DB)
     
         conn.execute("""
             INSERT INTO learning_patterns (
