@@ -296,13 +296,13 @@ def init_all_db():
             topic TEXT,
             hook TEXT,
             platform TEXT,
-    result_score INTEGER,
-    revenue INTEGER DEFAULT 0,
-    pattern_summary TEXT,
-    created_at TEXT
-);
+            result_score INTEGER,
+            revenue INTEGER DEFAULT 0,
+            pattern_summary TEXT,
+            created_at TEXT
+        );
 
-        CREATE TABLE IF NOT EXISTS market_decisions (
+    CREATE TABLE IF NOT EXISTS market_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     best_topic TEXT,
@@ -325,10 +325,10 @@ def init_all_db():
     decision_json TEXT,
 
     created_at TEXT
-);
-        """)
-     conn.commit()
-     conn.close()
+    );
+    """)
+    conn.commit()
+    conn.close()
 
     # Revenue DB
     conn = sqlite3.connect(REVENUE_DB)
