@@ -862,50 +862,12 @@ SYSTEM_MODE = intelligence
   }}
 }}
 
-評估規則：
-1. 痛點越痛、越急、越願意付錢，分數越高
-2. 流量大但不付錢，分數不能太高
-3. 如果主題不是感情，原則上不要使用現有感情 Threads 帳號
-4. 但如果多AI判斷使用現有帳號 ROI 明顯高於風險，可以建議使用，並說明原因
-5. 單平台或多平台由你判斷，不要固定
-6. 國家與語言由你判斷，不要固定台灣
-7. 最終答案必須偏向最快變現，而不是粉絲成長
-8. 只輸出 JSON，不要輸出其他文字
-"""
-
     analysis = _ai(prompt, task_type="strategy")
-    
-        if not analysis:
-            return "❌ 分析失敗"
-    
-        try:
-            decision_data = json.loads(analysis)
-        except Exception:
-            decision_data = {
-                "raw_analysis": analysis
-            }
-                }
-        
-            conn = sqlite3.connect(FEEDBACK_DB)
-    
-        conn.execute("""
-            INSERT INTO learning_patterns (
-                topic,
-                hook,
-                platform,
-                result_score,
-                revenue,
-                pattern_summary,
-                created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            "market_intelligence",
-            "auto_market_scan",
-            "multi_platform",
-            0,
-            0,
-            json.dumps(decision_data, ensure_ascii=False)[:2000],
+
+    if not analysis:
+        return "❌ 分析失敗"
+
+    decision_data = {"raw_analysis": analysis}
             datetime.now(timezone.utc).isoformat()
         ))
     
