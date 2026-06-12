@@ -867,15 +867,11 @@ SYSTEM_MODE = intelligence
     if not analysis:
         return "❌ 分析失敗"
 
+    conn = sqlite3.connect(FEEDBACK_DB)
     decision_data = {"raw_analysis": analysis}
-            datetime.now(timezone.utc).isoformat()
-        ))
-    
-        conn.commit()
-        conn.close()
-    
-        return analysis
+    conn.close()
 
+    return analysis
 
 def master_brief() -> str:
     """A2 分析師：今日 AI 簡報"""
