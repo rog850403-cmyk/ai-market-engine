@@ -301,6 +301,9 @@ def init_all_db():
             pattern_summary TEXT,
             created_at TEXT
         );
+        """)
+     conn.commit()
+     conn.close()
     """)
     conn.commit()
     conn.close()
