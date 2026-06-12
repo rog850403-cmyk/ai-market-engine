@@ -887,8 +887,6 @@ except Exception:
 
 conn = sqlite3.connect(FEEDBACK_DB)
 
-    conn = sqlite3.connect(FEEDBACK_DB)
-
     conn.execute("""
         INSERT INTO learning_patterns
         (
