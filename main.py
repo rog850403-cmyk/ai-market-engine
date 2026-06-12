@@ -792,7 +792,7 @@ elif SYSTEM_MODE == "scaling":
     if results:
         summary = f"🐝 <b>蜂群執行 UTC{utc_hour:02d}:00</b>\n\n" + "\n".join(results)
         tg(summary)
-            return summary
+        return summary
     return f"UTC{utc_hour:02d}: 無排程任務"
 
 
