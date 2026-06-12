@@ -797,11 +797,11 @@ elif SYSTEM_MODE == "scaling":
 
 
     def market_intelligence_cycle(args: list = []) -> str:
-    """市場情報循環"""
+        """市場情報循環"""
 
-    market_data = collect_data([])
+        market_data = collect_data([])
 
-    prompt = f"""
+        prompt = f"""
 你是 AI Compound Revenue System 的多模型決策委員會。
 
 系統目標：
