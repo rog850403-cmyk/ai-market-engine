@@ -887,32 +887,33 @@ except Exception:
 
 conn = sqlite3.connect(FEEDBACK_DB)
 
-    conn.execute("""
-        INSERT INTO learning_patterns
-        (
-            topic,
-            hook,
-            platform,
-            result_score,
-            revenue,
-            pattern_summary,
-            created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        "market_intelligence",
-        "auto_market_scan",
-        "multi_platform",
-        0,
-        0,
-        json.dumps(decision_data, ensure_ascii=False)[:2000],
-        datetime.now(timezone.utc).isoformat()
-    ))
+conn.execute("""
+INSERT INTO learning_patterns (
+    topic,
+    hook,
+    platform,
+    result_score,
+    revenue,
+    pattern_summary,
+    created_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+""", (
+    "market_intelligence",
+    "auto_market_scan",
+    "multi_platform",
+    0,
+    0,
+    json.dumps(decision_data, ensure_ascii=False)[:2000],
+    datetime.now(timezone.utc).isoformat()
+))
 
-    conn.commit()
-    conn.close()
+conn.commit()
+conn.close()
 
-    return analysis
+return analysis
+
+
 def master_brief() -> str:
     """A2 分析師：今日 AI 簡報"""
     market = _collect_autocomplete()
