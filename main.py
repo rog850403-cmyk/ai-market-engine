@@ -1532,83 +1532,83 @@ def run_scheduled():
 def dispatch(cmd: str, args: list = []) -> str:
     """統一命令分發器"""
 
-    routes = {
-        # 核心系統
-        "master_scan":    lambda: master_scan(),
-        "master_brief":   lambda: master_brief(),
-        "master_run":     lambda: master_run(),
-        "master_evolve":  lambda: master_evolve(),
+   routes = {
+    # 核心系統
+    "master_scan": lambda: master_scan(),
+    "master_brief": lambda: master_brief(),
+    "master_run": lambda: master_run(),
+    "master_evolve": lambda: master_evolve(),
 
-        # Boris 框架（v18.19）
-        "boris_plan":     lambda: boris_plan(args),
-        "boris_parallel": lambda: boris_parallel(args),
-        "boris_rules":    lambda: boris_rules(args),
-        "boris_record_error": lambda: boris_record_error(args),
-        "boris_dashboard":lambda: boris_dashboard(args),
-        "boris_pipeline": lambda: boris_plan(args),
-        "boris_create":   lambda: gen_nine_grid_hooks(args),
-        "boris_subagent": lambda: boris_parallel(args),
+    # Boris
+    "boris_plan": lambda: boris_plan(args),
+    "boris_parallel": lambda: boris_parallel(args),
+    "boris_rules": lambda: boris_rules(args),
+    "boris_record_error": lambda: boris_record_error(args),
+    "boris_dashboard": lambda: boris_dashboard(args),
+    "boris_pipeline": lambda: boris_plan(args),
+    "boris_create": lambda: gen_nine_grid_hooks(args),
+    "boris_subagent": lambda: boris_parallel(args),
 
-        # 九宮格指令（v18.19）
-        "nine_grid":          lambda: gen_nine_grid_hooks(args),
-        "nine_grid_plan":     lambda: gen_nine_grid_content_plan(args),
+    # 九宮格
+    "nine_grid": lambda: gen_nine_grid_hooks(args),
+    "nine_grid_plan": lambda: gen_nine_grid_content_plan(args),
 
-        # 數據收集
-        "collect_data":       lambda: collect_data(args),
-        "collect_rss":        lambda: _collect_rss(),
-        "collect_autocomplete": lambda: _collect_autocomplete(),
+    # 數據收集
+    "collect_data": lambda: collect_data(args),
+    "collect_rss": lambda: collect_rss(),
+    "collect_autocomplete": lambda: _collect_autocomplete(),
 
-        # AI短劇（v18.18）
-        "drama_create":    lambda: drama_create(args),
-        "drama_storyboard":lambda: drama_storyboard(args),
-        "drama_list":      lambda: drama_list(args),
-        "drama_video":     lambda: f"影片生成功能需要 FAL_API_KEY，請先設定",
+    # AI工廠
+    "drama_create": lambda: drama_create(args),
+    "drama_storyboard": lambda: drama_storyboard(args),
+    "drama_list": lambda: drama_list(args),
+    "drama_video": lambda: "影片生成功能需要 FAL_API_KEY，請先設定",
 
-        # 進化系統（v18.18）
-        "evolve_run":      lambda: evolve_run(args),
-        "evolve_status":   lambda: evolve_status(args),
+    # 進化系統
+    "evolve_run": lambda: evolve_run(args),
+    "evolve_status": lambda: evolve_status(args),
 
-        # 品質監測（v18.18）
-        "quality_check":   lambda: quality_check(args),
-        "quality_dashboard": lambda: quality_dashboard(args),
+    # 品質監測
+    "quality_check": lambda: quality_check(args),
+    "quality_dashboard": lambda: quality_dashboard(args),
 
-        # 系統工具
-        "health_check":    lambda: health_check(args),
-        "revenue_log":     lambda: revenue_log(args),
-        "revenue_dashboard": lambda: revenue_dashboard(args),
+    # 系統工具
+    "health_check": lambda: health_check(args),
+    "revenue_log": lambda: revenue_log(args),
+    "revenue_dashboard": lambda: revenue_dashboard(args),
 
-        # 變現
-        "monetize":        lambda: monetize_run(args),
+    # 變現
+    "monetize": lambda: monetize_run(args),
 
-        # v18.20 新增
-        "shopee_content":  lambda: shopee_affiliate_content(args),
-        "shopee_guide":    lambda: shopee_setup_guide(args),
-        "gemini_quota":    lambda: gemini_quota_check(args),
+    # Shopee
+    "shopee_content": lambda: shopee_affiliate_content(args),
+    "shopee_guide": lambda: shopee_setup_guide(args),
+    "gemini_quota": lambda: gemini_quota_check(args),
 
-        # 排程啟動
-        # 全自動聯盟發文（v18.21）
-        "gumroad_ebook":   lambda: gumroad_ebook_outline(args),
-        "auto_post":       lambda: auto_affiliate_post(args),
-        "affiliate_post":  lambda: auto_affiliate_post(args),
-        "affiliate_dashboard": lambda: affiliate_dashboard(args),
+    # 聯盟系統
+    "gumroad_ebook": lambda: gumroad_ebook_outline(args),
+    "auto_post": lambda: auto_affiliate_post(args),
+    "affiliate_post": lambda: auto_affiliate_post(args),
+    "affiliate_dashboard": lambda: affiliate_dashboard(args),
 
-        "start":           lambda: run_scheduled(),
-        "schedule":        lambda: run_scheduled(),
-    }
+    # Railway 啟動入口
+    "start": lambda: run_schedule(),
+    "schedule": lambda: run_schedule(),
+}
 
-    fn = routes.get(cmd)
-    if fn:
-        try:
-            return fn()
-        except Exception as e:
-            error_msg = f"❌ 指令 '{cmd}' 執行失敗：{e}"
-            logger.error(error_msg)
-            boris_record_error([cmd, str(e)])
-            return error_msg
-    else:
-        available = "\n".join(sorted(routes.keys()))
-        return f"未知指令：{cmd}\n\n可用指令：\n{available}"
+fn = routes.get(cmd)
 
+if fn:
+    try:
+        return fn()
+    except Exception as e:
+        error_msg = f"❌ 指令 {cmd} 執行失敗：{e}"
+        logger.error(error_msg)
+        boris_record_error(cmd, str(e))
+        return error_msg
+else:
+    available = "\n".join(sorted(routes.keys()))
+    return f"未知指令：{cmd}\n\n可用指令：\n{available}"
 # ─────────────────────────────────────────
 # ── 模組十三：全自動聯盟發文引擎（v18.21）
 # ─────────────────────────────────────────
