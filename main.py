@@ -874,24 +874,21 @@ SYSTEM_MODE = intelligence
     return analysis
 
 def master_brief() -> str:
-    """A2 分析師：今日 AI 簡報"""
     market = _collect_autocomplete()
+
     brief = _ai(f"""
-基於以下市場數據，生成「暗面筆記」今日策略簡報：
+基於以下市場數據，生成「簡報筆記」今日策略摘要：
 
 {market}
 
 輸出包含：
-1. 今日最熱話題（3個）
-2. 建議內容策略（2點）
-3. 變現機會提示（1個）
-4. 風險提示（1個）
-
-繁體中文，簡潔有力。
+1. 今日最熱話題
+2. 建議內容方向
+3. 變現機會提示
+4. 風險提示
 """, task_type="analyze")
 
-    result = f"📊 <b>今日AI簡報</b>\n{datetime.now().strftime('%Y-%m-%d')}\n\n{brief}"
-    tg(result)
+    result = f"{brief}"
     return result
 
 def master_scan() -> str:
