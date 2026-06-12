@@ -873,45 +873,45 @@ SYSTEM_MODE = intelligence
 8. 只輸出 JSON，不要輸出其他文字
 """
 
- analysis = _ai(prompt, task_type="strategy")
-
-    if not analysis:
-        return "❌ 分析失敗"
-
-    try:
-        decision_data = json.loads(analysis)
-    except Exception:
-        decision_data = {
-            "raw_analysis": analysis
-        }
-
-    conn = sqlite3.connect(FEEDBACK_DB)
-
-    conn.execute("""
-        INSERT INTO learning_patterns (
-            topic,
-            hook,
-            platform,
-            result_score,
-            revenue,
-            pattern_summary,
-            created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        "market_intelligence",
-        "auto_market_scan",
-        "multi_platform",
-        0,
-        0,
-        json.dumps(decision_data, ensure_ascii=False)[:2000],
-        datetime.now(timezone.utc).isoformat()
-    ))
-
-    conn.commit()
-    conn.close()
-
-    return analysis
+     analysis = _ai(prompt, task_type="strategy")
+    
+        if not analysis:
+            return "❌ 分析失敗"
+    
+        try:
+            decision_data = json.loads(analysis)
+        except Exception:
+            decision_data = {
+                "raw_analysis": analysis
+            }
+    
+        conn = sqlite3.connect(FEEDBACK_DB)
+    
+        conn.execute("""
+            INSERT INTO learning_patterns (
+                topic,
+                hook,
+                platform,
+                result_score,
+                revenue,
+                pattern_summary,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "market_intelligence",
+            "auto_market_scan",
+            "multi_platform",
+            0,
+            0,
+            json.dumps(decision_data, ensure_ascii=False)[:2000],
+            datetime.now(timezone.utc).isoformat()
+        ))
+    
+        conn.commit()
+        conn.close()
+    
+        return analysis
 
 
 def master_brief() -> str:
