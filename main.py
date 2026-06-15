@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-暗面筆記 Shadow Notes — 整合主程式 v18.28（分散節點版）
-整合版本：v18.5 ~ v18.21 所有模組 + v18.22 Threads API修正 + v18.28 智慧模型路由/決策落庫
+暗面筆記 Shadow Notes — 整合主程式 v18.29（分散節點版）
+整合版本：v18.5 ~ v18.21 所有模組 + v18.22 Threads API修正 + v18.29 智慧模型路由/決策落庫
 部署：Railway / Termux Samsung S9+
 作者：Hsuan (廖志軒)
 更新：2026-05-26
@@ -88,7 +88,7 @@ def _get_degraded_models() -> set:
 
 def _ai(prompt: str, task_type: str = "general", _visited: set = None) -> str:
     """
-    多模型智慧路由 AI 呼叫（v18.28）。
+    多模型智慧路由 AI 呼叫（v18.29）。
     驅動邏輯：
     1. 依任務類型取得優先序（TASK_MODEL_PRIORITY）
     2. 查 QUALITY_DB：6小時內降級的模型自動排到隊尾（仍可當最後手段）
@@ -138,7 +138,7 @@ def _call_groq(prompt: str) -> str:
     if not key:
         return ""
     import urllib.request
-    for model in ["llama-3.1-8b-instant","llama3-8b-8192","gemma2-9b-it","mixtral-8x7b-32768"]:
+    for model in ["llama-3.3-70b-versatile","llama-3.1-8b-instant"]:
         try:
             data = json.dumps({"model":model,"messages":[{"role":"user","content":prompt}],"max_tokens":1500,"temperature":0.7}).encode()
             req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions",data=data,headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"})
@@ -154,7 +154,7 @@ def _call_gemini(prompt: str) -> str:
     if not key:
         return ""
     import urllib.request
-    for model in ["gemini-1.5-flash","gemini-1.5-flash-8b","gemini-2.0-flash-lite"]:
+    for model in ["gemini-2.5-flash","gemini-2.5-flash-lite"]:
         try:
             data = json.dumps({"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":1500,"temperature":0.7}}).encode()
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
@@ -410,7 +410,7 @@ def init_all_db():
     logger.info("所有資料庫初始化完成")
 
 # ─────────────────────────────────────────
-# ── Wiki 統一共享記憶層 (v18.28)
+# ── Wiki 統一共享記憶層 (v18.29)
 # ── 對應「一人公司」框架的 Wiki：所有 AI 角色共享的公司大腦
 # ── 解決問題：過去每個角色各開各的 DB，狀態不互通 → 無法協作收斂
 # ─────────────────────────────────────────
@@ -529,7 +529,7 @@ def wiki_dashboard(args: list = []) -> str:
 # ── 模組一：市場數據收集（A1 偵察員）
 # ─────────────────────────────────────────
 def collect_data(args: list = []) -> str:
-    """收集真實市場數據（v18.28 擴充感知層：RSS + Autocomplete + Google News + PTT）
+    """收集真實市場數據（v18.29 擴充感知層：RSS + Autocomplete + Google News + PTT）
     全部免費、無需 API 授權。所有資料源平行收集後交給多模型 AI 綜合分析。
     """
     results = []
@@ -1058,7 +1058,7 @@ SYSTEM_MODE = intelligence
     if not analysis:
         return "❌ 分析失敗"
 
-    # v18.28：解析 JSON 並把最終決策落入 market_decisions 表（決策可追溯、可回饋學習）
+    # v18.29：解析 JSON 並把最終決策落入 market_decisions 表（決策可追溯、可回饋學習）
     try:
         cleaned = re.sub(r"^```(json)?|```$", "", analysis.strip(), flags=re.MULTILINE).strip()
         decision = json.loads(cleaned)
@@ -1084,7 +1084,7 @@ SYSTEM_MODE = intelligence
         ))
         conn.commit()
         conn.close()
-        # v18.28：決策寫進 Wiki 共享記憶，其他角色（文案/變現）即可讀取當前主題與策略
+        # v18.29：決策寫進 Wiki 共享記憶，其他角色（文案/變現）即可讀取當前主題與策略
         wiki_set("current_topic", final.get("best_topic", ""), role="A4_strategy")
         wiki_set("current_decision", final, role="A4_strategy")
         wiki_log("A4_strategy", "market_decision", final.get("best_topic", ""))
@@ -1487,7 +1487,7 @@ def health_check(args: list = []) -> str:
 <b>資料庫：</b>
 {chr(10).join(db_status)}
 
-<b>版本：</b> v18.28
+<b>版本：</b> v18.29
 <b>Python：</b> {sys.version.split()[0]}
 """
     tg(output)
@@ -1640,7 +1640,7 @@ def gemini_quota_check(args: list = []) -> str:
 
 def _http_keepalive():
     """Railway Web Service 需要綁定 PORT，否則會被判定為 crash
-    v18.28：新增 /health JSON 端點，供分散節點（Termux watchdog / GitHub Actions）監測
+    v18.29：新增 /health JSON 端點，供分散節點（Termux watchdog / GitHub Actions）監測
     """
     import http.server
     port = int(E("PORT", "8080"))
@@ -1649,7 +1649,7 @@ def _http_keepalive():
         def do_GET(self):
             if self.path == "/health":
                 # 跨節點健康檢查：版本、模式、DB 可用性、最後決策時間
-                health = {"version": "v18.28", "mode": SYSTEM_MODE,
+                health = {"version": "v18.29", "mode": SYSTEM_MODE,
                           "utc": datetime.now(timezone.utc).isoformat(), "db": "ok",
                           "last_decision": None}
                 try:
@@ -1670,7 +1670,7 @@ def _http_keepalive():
             else:
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(b"Shadow Notes v18.28 - Running")
+                self.wfile.write(b"Shadow Notes v18.29 - Running")
         def log_message(self, *args):
             pass  # 靜音 HTTP log
 
@@ -1680,7 +1680,7 @@ def _http_keepalive():
     logger.info(f"HTTP keepalive 啟動於 port {port}（含 /health 端點）")
 
 def _tg_command_listener():
-    """v18.28：Telegram 雙向指揮
+    """v18.29：Telegram 雙向指揮
     iPhone 17 的 TG 對話框 = 系統控制台。
     直接在 TG 打指令（如 health_check / revenue_dashboard / master_brief），
     系統執行 dispatch 後把結果回傳到同一個對話。
@@ -1728,14 +1728,14 @@ def _tg_command_listener():
 
 def run_scheduled():
     """Railway 持續運行排程（Web Service 模式）"""
-    logger.info("Shadow Notes v18.28 排程啟動")
+    logger.info("Shadow Notes v18.29 排程啟動")
     init_all_db()
     _wiki_init()
 
     # Railway Web Service 需要 HTTP server 保持存活
     _http_keepalive()
 
-    # v18.28：TG 雙向指揮（手機即控制台）
+    # v18.29：TG 雙向指揮（手機即控制台）
     _tg_command_listener()
 
     # 啟動後立刻執行一次，不等整點
@@ -1746,7 +1746,7 @@ def run_scheduled():
     except Exception as e:
         logger.error(f"啟動執行錯誤: {e}")
 
-    tg("🚀 <b>暗面筆記 v18.28 啟動</b>\n系統就緒，蜂群開始運行")
+    tg("🚀 <b>暗面筆記 v18.29 啟動</b>\n系統就緒，蜂群開始運行")
 
     while True:
         try:
@@ -1924,7 +1924,7 @@ def _pick_affiliate_link(topic: str) -> tuple:
 
 def auto_affiliate_post(args: list = []) -> str:
     """
-    全自動變現發文引擎（v18.28 修正：自有產品優先 + 回饋鏈接通）
+    全自動變現發文引擎（v18.29 修正：自有產品優先 + 回饋鏈接通）
     流程：抓熱點 → 優先推自有電子書(利潤100%)，否則聯盟連結 → AI文案 → 發布 → 記錄回饋
     """
     # Step 1: 抓今日熱點關鍵字
@@ -1999,7 +1999,7 @@ def auto_affiliate_post(args: list = []) -> str:
     conn.commit()
     conn.close()
 
-    # Step 7（v18.28 補）：接通回饋鏈 —— 寫入 platform_posts，之後才追得回成效
+    # Step 7（v18.29 補）：接通回饋鏈 —— 寫入 platform_posts，之後才追得回成效
     if threads_result:
         record_platform_post("threads", str(threads_result), today_topic, full_post, aff_link)
     record_platform_post("telegram", f"tg_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
@@ -2138,7 +2138,7 @@ def gumroad_ebook_outline(args: list = []) -> str:
     if not result:
         return "❌ AI 生成失敗，請稍後重試"
 
-    # v18.28：企劃落庫，避免重複消耗 AI 額度，之後可隨時調閱
+    # v18.29：企劃落庫，避免重複消耗 AI 額度，之後可隨時調閱
     try:
         conn = sqlite3.connect(BORIS_DB)
         conn.execute("""
@@ -2205,7 +2205,7 @@ if __name__ == "__main__":
     init_all_db()
 
     if len(sys.argv) < 2:
-        print("暗面筆記 v18.28")
+        print("暗面筆記 v18.29")
         print("用法：python main.py [指令] [參數...]")
         print("執行 python main.py health_check 查看系統狀態")
         sys.exit(0)
