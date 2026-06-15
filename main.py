@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-暗面筆記 Shadow Notes — 整合主程式 v18.22
-整合版本：v18.5 ~ v18.21 所有模組 + v18.22 Threads API修正
+暗面筆記 Shadow Notes — 整合主程式 v18.27（分散節點版）
+整合版本：v18.5 ~ v18.21 所有模組 + v18.22 Threads API修正 + v18.27 智慧模型路由/決策落庫
 部署：Railway / Termux Samsung S9+
 作者：Hsuan (廖志軒)
 更新：2026-05-26
@@ -53,25 +53,59 @@ TG_PAID_CHAT= E("TG_PAID_CHAT_ID", "-1009390767725")
 # ─────────────────────────────────────────
 FALLBACK_CHAIN = ["groq", "gemini", "deepseek", "openrouter"]
 
+# 任務類型 → 模型優先序（系統驅動模式核心：每層任務配最適模型）
+TASK_MODEL_PRIORITY = {
+    "copywrite": ["groq", "gemini", "deepseek"],      # 文案：速度優先
+    "fast":      ["groq", "deepseek", "gemini"],      # 高頻輕量任務
+    "analyze":   ["gemini", "groq", "deepseek"],      # 分析：長上下文優先
+    "strategy":  ["gemini", "openrouter", "groq"],    # 策略：推理品質優先
+    "creative":  ["groq", "gemini", "openrouter"],    # 創意：多樣性優先
+    "code":      ["deepseek", "groq", "gemini"],      # 程式：DeepSeek 強項
+    "general":   ["groq", "gemini", "deepseek"],
+}
+
+def _get_degraded_models() -> set:
+    """讀取 QUALITY_DB 過去6小時被標記降級的模型（品質感知路由用）"""
+    degraded = set()
+    try:
+        conn = sqlite3.connect(QUALITY_DB)
+        rows = conn.execute("""
+            SELECT model FROM model_quality
+            WHERE degraded = 1 AND checked_at >= datetime('now', '-6 hours')
+            GROUP BY model
+        """).fetchall()
+        conn.close()
+        degraded = {r[0] for r in rows}
+        # system_health 標記的 gemini 降級也納入
+        conn = sqlite3.connect(QUALITY_DB)
+        gh = conn.execute("SELECT status FROM system_health WHERE component='gemini_quota'").fetchone()
+        conn.close()
+        if gh and gh[0] == "degraded":
+            degraded.add("gemini")
+    except Exception:
+        pass
+    return degraded
+
 def _ai(prompt: str, task_type: str = "general", _visited: set = None) -> str:
     """
-    多模型 fallback AI 呼叫。
-    修正：使用 _visited 集合避免無限遞迴（v18.19 bug fix）
-    Fallback 鏈：groq → gemini → deepseek → openrouter → ""
+    多模型智慧路由 AI 呼叫（v18.27）。
+    驅動邏輯：
+    1. 依任務類型取得優先序（TASK_MODEL_PRIORITY）
+    2. 查 QUALITY_DB：6小時內降級的模型自動排到隊尾（仍可當最後手段）
+    3. 依序呼叫，_visited 集合避免無限遞迴（v18.19 bug fix）
+    Fallback 鏈底線：groq → gemini → deepseek → openrouter → ""
     """
     if _visited is None:
         _visited = set()
 
-    # 根據任務類型決定優先模型
-    priority = {
-        "copywrite": ["groq", "gemini", "deepseek"],
-        "fast":      ["groq", "deepseek", "gemini"],
-        "analyze":   ["gemini", "groq", "deepseek"],
-        "strategy":  ["gemini", "openrouter", "groq"],
-        "creative":  ["groq", "gemini", "openrouter"],
-        "code":      ["deepseek", "groq", "gemini"],
-        "general":   ["groq", "gemini", "deepseek"],
-    }.get(task_type, ["groq", "gemini", "deepseek"])
+    priority = list(TASK_MODEL_PRIORITY.get(task_type, TASK_MODEL_PRIORITY["general"]))
+
+    # 品質感知：降級模型移到隊尾，不直接剔除
+    degraded = _get_degraded_models()
+    if degraded:
+        healthy = [m for m in priority if m not in degraded]
+        demoted = [m for m in priority if m in degraded]
+        priority = healthy + demoted
 
     for model in priority:
         if model in _visited:
@@ -376,16 +410,175 @@ def init_all_db():
     logger.info("所有資料庫初始化完成")
 
 # ─────────────────────────────────────────
+# ── Wiki 統一共享記憶層 (v18.27)
+# ── 對應「一人公司」框架的 Wiki：所有 AI 角色共享的公司大腦
+# ── 解決問題：過去每個角色各開各的 DB，狀態不互通 → 無法協作收斂
+# ─────────────────────────────────────────
+WIKI_DB = "/tmp/wiki_memory.db"
+
+def _wiki_init():
+    """初始化 Wiki 共享記憶層（單一 key-value + 事件流結構）"""
+    conn = sqlite3.connect(WIKI_DB)
+    conn.executescript("""
+        -- 共享狀態：任何角色可讀寫的 key-value（如最新決策、當前主題、目標進度）
+        CREATE TABLE IF NOT EXISTS wiki_state (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_by TEXT,
+            updated_at TEXT
+        );
+        -- 事件流：所有角色的行動留痕，append-only，供進化引擎回溯學習
+        CREATE TABLE IF NOT EXISTS wiki_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT,
+            event TEXT,
+            payload TEXT,
+            created_at TEXT
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+def wiki_set(key: str, value, role: str = "system") -> bool:
+    """寫入共享狀態（任何 AI 角色都能呼叫，覆寫同 key）"""
+    try:
+        _wiki_init()
+        v = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        conn = sqlite3.connect(WIKI_DB)
+        conn.execute("""
+            INSERT INTO wiki_state (key, value, updated_by, updated_at)
+            VALUES (?,?,?,?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+                updated_by=excluded.updated_by, updated_at=excluded.updated_at
+        """, (key, v, role, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.warning(f"wiki_set 失敗 {key}: {e}")
+        return False
+
+def wiki_get(key: str, default=None):
+    """讀取共享狀態（任何 AI 角色都能呼叫）"""
+    try:
+        _wiki_init()
+        conn = sqlite3.connect(WIKI_DB)
+        row = conn.execute("SELECT value FROM wiki_state WHERE key=?", (key,)).fetchone()
+        conn.close()
+        if not row:
+            return default
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return row[0]
+    except Exception as e:
+        logger.warning(f"wiki_get 失敗 {key}: {e}")
+        return default
+
+def wiki_log(role: str, event: str, payload=None) -> bool:
+    """角色行動留痕到事件流（供進化引擎回溯）"""
+    try:
+        _wiki_init()
+        p = payload if isinstance(payload, str) else json.dumps(payload or {}, ensure_ascii=False)
+        conn = sqlite3.connect(WIKI_DB)
+        conn.execute("INSERT INTO wiki_events (role, event, payload, created_at) VALUES (?,?,?,?)",
+                     (role, event, p[:2000], datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.warning(f"wiki_log 失敗: {e}")
+        return False
+
+def wiki_recent(role: str = None, limit: int = 20) -> list:
+    """讀取近期事件流（進化引擎用：回看各角色做了什麼）"""
+    try:
+        _wiki_init()
+        conn = sqlite3.connect(WIKI_DB)
+        if role:
+            rows = conn.execute("SELECT role,event,payload,created_at FROM wiki_events WHERE role=? ORDER BY id DESC LIMIT ?", (role, limit)).fetchall()
+        else:
+            rows = conn.execute("SELECT role,event,payload,created_at FROM wiki_events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.warning(f"wiki_recent 失敗: {e}")
+        return []
+
+def wiki_dashboard(args: list = []) -> str:
+    """Wiki 共享記憶儀表板：看系統大腦現在記得什麼"""
+    _wiki_init()
+    conn = sqlite3.connect(WIKI_DB)
+    states = conn.execute("SELECT key, value, updated_by, updated_at FROM wiki_state ORDER BY updated_at DESC LIMIT 15").fetchall()
+    ev_count = conn.execute("SELECT COUNT(*) FROM wiki_events").fetchone()[0]
+    roles = conn.execute("SELECT role, COUNT(*) FROM wiki_events GROUP BY role").fetchall()
+    conn.close()
+    out = ["🧠 <b>Wiki 共享記憶（系統大腦）</b>\n"]
+    out.append(f"事件流：{ev_count} 筆 | 活躍角色：{len(roles)}")
+    if roles:
+        out.append("角色活動：" + "，".join(f"{r[0]}({r[1]})" for r in roles))
+    out.append("\n<b>共享狀態：</b>")
+    if states:
+        for k, v, by, at in states:
+            out.append(f"• {k} = {str(v)[:60]}（by {by}）")
+    else:
+        out.append("（尚無共享狀態，角色執行後會自動寫入）")
+    return "\n".join(out)
+
+# ─────────────────────────────────────────
 # ── 模組一：市場數據收集（A1 偵察員）
 # ─────────────────────────────────────────
 def collect_data(args: list = []) -> str:
-    """收集真實市場數據（RSS + Google Autocomplete + Google News）"""
+    """收集真實市場數據（v18.27 擴充感知層：RSS + Autocomplete + Google News + PTT）
+    全部免費、無需 API 授權。所有資料源平行收集後交給多模型 AI 綜合分析。
+    """
     results = []
     results.append(_collect_rss())
     results.append(_collect_autocomplete())
+    results.append(_collect_google_news())
+    results.append(_collect_ptt())
     summary = "\n\n".join(results)
-    tg(f"📡 <b>市場數據收集完成</b>\n{summary[:2000]}")
+    tg(f"📡 <b>市場數據收集完成（4 源）</b>\n{summary[:2000]}")
     return summary
+
+def _collect_google_news() -> str:
+    """Google News RSS：台灣即時時事熱點（真實新聞標題）"""
+    import urllib.request, urllib.parse
+    import xml.etree.ElementTree as ET
+    queries = ["AI 副業", "被動收入", "AI 工具", "自動化"]
+    out = []
+    for q in queries:
+        try:
+            url = f"https://news.google.com/rss/search?q={urllib.parse.quote(q)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=12) as r:
+                root = ET.parse(r).getroot()
+            for it in root.findall(".//item")[:3]:
+                title = (it.findtext("title") or "").strip()
+                if title:
+                    out.append(f"[{q}] {title[:60]}")
+        except Exception as e:
+            out.append(f"[{q}] 失敗: {e}")
+    return f"📰 Google News：{len(out)}則\n" + "\n".join(out[:15])
+
+def _collect_ptt() -> str:
+    """PTT 公開看板：真實討論熱文（反映社群真實痛點與話題）"""
+    import urllib.request, re
+    boards = ["Soft_Job", "tech_job", "Stock"]
+    out = []
+    for board in boards:
+        try:
+            url = f"https://www.ptt.cc/bbs/{board}/index.html"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            html = urllib.request.urlopen(req, timeout=12).read().decode("utf-8", "ignore")
+            titles = re.findall(r'<div class="title">\s*<a href="[^"]+">([^<]+)</a>', html)
+            for t in titles[:4]:
+                t = t.strip()
+                if t and "公告" not in t:
+                    out.append(f"[{board}] {t[:50]}")
+        except Exception as e:
+            out.append(f"[{board}] 失敗: {e}")
+    return f"💬 PTT討論：{len(out)}篇\n" + "\n".join(out[:15])
 
 def _collect_rss() -> str:
     """RSS 全源收集"""
@@ -765,25 +958,22 @@ def run_master_cycle(utc_hour: int = None) -> str:
         r = monetize_run()
         results.append(f"A6變現師：{r[:100]}")
     # 已暫停：目前系統進入 Market Intelligence / Feedback Collection Mode
+
     # 市場情報模式
+    if SYSTEM_MODE == "intelligence":
+        r = market_intelligence_cycle([])
+        results.append(f"市場情報:{r[:100]}")
 
-if SYSTEM_MODE == "intelligence":
-    r = market_intelligence_cycle([])
-    results.append(f"市場情報:{r[:100]}")
+    # 驗證模式
+    elif SYSTEM_MODE == "validation":
+        logger.info("Validation Mode")
 
-# 驗證模式
+    # 擴張模式
+    elif SYSTEM_MODE == "scaling":
+        if utc_hour in [7, 12, 18]:
+            r = auto_affiliate_post([])
+            results.append(f"推廣:{r[:80]}")
 
-elif SYSTEM_MODE == "validation":
-    logger.info("Validation Mode")
-
-# 擴張模式
-
-elif SYSTEM_MODE == "scaling":
-
-    if utc_hour in [7,12,18]:
-        r = auto_affiliate_post([])
-        results.append(f"推廣:{r[:80]}")
-    
     # A7 進化引擎：UTC 22, 23
     if utc_hour in [22, 23]:
         r = evolve_run()
@@ -861,15 +1051,46 @@ SYSTEM_MODE = intelligence
     "next_7_days_plan": ["Day1", "Day2", "Day3", "Day4", "Day5", "Day6", "Day7"]
   }}
 }}
+"""
 
     analysis = _ai(prompt, task_type="strategy")
 
     if not analysis:
         return "❌ 分析失敗"
 
-    conn = sqlite3.connect(FEEDBACK_DB)
-    decision_data = {"raw_analysis": analysis}
-    conn.close()
+    # v18.27：解析 JSON 並把最終決策落入 market_decisions 表（決策可追溯、可回饋學習）
+    try:
+        cleaned = re.sub(r"^```(json)?|```$", "", analysis.strip(), flags=re.MULTILINE).strip()
+        decision = json.loads(cleaned)
+        final = decision.get("final_decision", {})
+        conn = sqlite3.connect(FEEDBACK_DB)
+        conn.execute("""
+            INSERT INTO market_decisions
+            (best_topic, best_country, best_language, platform_mode,
+             primary_platform, secondary_platforms, account_strategy,
+             reason, decision_json, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (
+            final.get("best_topic", ""),
+            final.get("best_country", ""),
+            final.get("best_language", ""),
+            final.get("platform_mode", ""),
+            final.get("primary_platform", ""),
+            json.dumps(final.get("secondary_platforms", []), ensure_ascii=False),
+            final.get("account_strategy", ""),
+            final.get("reason", ""),
+            cleaned[:4000],
+            datetime.now(timezone.utc).isoformat()
+        ))
+        conn.commit()
+        conn.close()
+        # v18.27：決策寫進 Wiki 共享記憶，其他角色（文案/變現）即可讀取當前主題與策略
+        wiki_set("current_topic", final.get("best_topic", ""), role="A4_strategy")
+        wiki_set("current_decision", final, role="A4_strategy")
+        wiki_log("A4_strategy", "market_decision", final.get("best_topic", ""))
+        tg(f"🧭 <b>市場情報決策</b>\n主題：{final.get('best_topic','?')}\n平台：{final.get('primary_platform','?')}\n策略：{final.get('account_strategy','?')}\n理由：{final.get('reason','')[:150]}")
+    except Exception as e:
+        logger.warning(f"決策JSON解析失敗，僅保留原文: {e}")
 
     return analysis
 
@@ -1044,7 +1265,7 @@ def drama_storyboard(args: list = []) -> str:
 大綱：{outline[:400]}
 
 輸出9格分鏡，每格：
-[格{n}]
+[格{{N}}]
 場景：[地點+時間]
 角色：[誰]
 動作：[做什麼]
@@ -1266,7 +1487,7 @@ def health_check(args: list = []) -> str:
 <b>資料庫：</b>
 {chr(10).join(db_status)}
 
-<b>版本：</b> v18.20
+<b>版本：</b> v18.27
 <b>Python：</b> {sys.version.split()[0]}
 """
     tg(output)
@@ -1418,28 +1639,104 @@ def gemini_quota_check(args: list = []) -> str:
 # ─────────────────────────────────────────
 
 def _http_keepalive():
-    """Railway Web Service 需要綁定 PORT，否則會被判定為 crash"""
+    """Railway Web Service 需要綁定 PORT，否則會被判定為 crash
+    v18.27：新增 /health JSON 端點，供分散節點（Termux watchdog / GitHub Actions）監測
+    """
     import http.server
     port = int(E("PORT", "8080"))
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"Shadow Notes v18.20 - Running")
+            if self.path == "/health":
+                # 跨節點健康檢查：版本、模式、DB 可用性、最後決策時間
+                health = {"version": "v18.27", "mode": SYSTEM_MODE,
+                          "utc": datetime.now(timezone.utc).isoformat(), "db": "ok",
+                          "last_decision": None}
+                try:
+                    conn = sqlite3.connect(FEEDBACK_DB)
+                    row = conn.execute(
+                        "SELECT created_at FROM market_decisions ORDER BY id DESC LIMIT 1"
+                    ).fetchone()
+                    conn.close()
+                    if row:
+                        health["last_decision"] = row[0]
+                except Exception as e:
+                    health["db"] = f"error: {e}"
+                body = json.dumps(health, ensure_ascii=False).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"Shadow Notes v18.27 - Running")
         def log_message(self, *args):
             pass  # 靜音 HTTP log
+
     server = http.server.HTTPServer(("0.0.0.0", port), Handler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
-    logger.info(f"HTTP keepalive 啟動於 port {port}")
+    logger.info(f"HTTP keepalive 啟動於 port {port}（含 /health 端點）")
+
+def _tg_command_listener():
+    """v18.27：Telegram 雙向指揮
+    iPhone 17 的 TG 對話框 = 系統控制台。
+    直接在 TG 打指令（如 health_check / revenue_dashboard / master_brief），
+    系統執行 dispatch 後把結果回傳到同一個對話。
+    安全：只接受 TG_CHAT_ID 本人的訊息；start/schedule 禁用避免巢狀排程。
+    """
+    if not TG_TOKEN or not TG_CHAT_ID:
+        logger.info("TG 指令監聽未啟動（缺 TG_TOKEN/TG_CHAT_ID）")
+        return
+
+    import urllib.request
+    BLOCKED = {"start", "schedule"}
+
+    def _loop():
+        offset = 0
+        while True:
+            try:
+                url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates?timeout=50&offset={offset}"
+                with urllib.request.urlopen(url, timeout=60) as r:
+                    data = json.loads(r.read())
+                for upd in data.get("result", []):
+                    offset = upd["update_id"] + 1
+                    msg = upd.get("message") or {}
+                    chat = str((msg.get("chat") or {}).get("id", ""))
+                    text = (msg.get("text") or "").strip()
+                    if chat != str(TG_CHAT_ID) or not text:
+                        continue  # 非主人指令一律忽略
+                    parts = text.lstrip("/").split()
+                    cmd, cargs = parts[0], parts[1:]
+                    if cmd in BLOCKED:
+                        tg("⚠️ start/schedule 僅限伺服器啟動使用")
+                        continue
+                    logger.info(f"TG 指令：{cmd} {cargs}")
+                    try:
+                        result = dispatch(cmd, cargs)
+                        tg(f"📟 {cmd} 結果：\n{result[:3800]}")
+                    except Exception as e:
+                        tg(f"❌ 指令 {cmd} 執行錯誤：{e}")
+            except Exception as e:
+                logger.warning(f"TG 監聽錯誤：{e}")
+                time.sleep(15)
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    logger.info("TG 雙向指揮已啟動（iPhone 17 控制台模式）")
 
 def run_scheduled():
     """Railway 持續運行排程（Web Service 模式）"""
-    logger.info("Shadow Notes v18.20 排程啟動")
+    logger.info("Shadow Notes v18.27 排程啟動")
     init_all_db()
+    _wiki_init()
 
     # Railway Web Service 需要 HTTP server 保持存活
     _http_keepalive()
+
+    # v18.27：TG 雙向指揮（手機即控制台）
+    _tg_command_listener()
 
     # 啟動後立刻執行一次，不等整點
     utc_hour = datetime.now(timezone.utc).hour
@@ -1449,7 +1746,7 @@ def run_scheduled():
     except Exception as e:
         logger.error(f"啟動執行錯誤: {e}")
 
-    tg("🚀 <b>暗面筆記 v18.20 啟動</b>\n系統就緒，蜂群開始運行")
+    tg("🚀 <b>暗面筆記 v18.27 啟動</b>\n系統就緒，蜂群開始運行")
 
     while True:
         try:
@@ -1488,7 +1785,7 @@ def run_scheduled():
 def dispatch(cmd: str, args: list = []) -> str:
     """統一命令分發器"""
 
-   routes = {
+    routes = {
     # 核心系統
     "master_scan": lambda: master_scan(),
     "master_brief": lambda: master_brief(),
@@ -1501,6 +1798,7 @@ def dispatch(cmd: str, args: list = []) -> str:
     "boris_rules": lambda: boris_rules(args),
     "boris_record_error": lambda: boris_record_error(args),
     "boris_dashboard": lambda: boris_dashboard(args),
+    "wiki_dashboard": lambda: wiki_dashboard(args),
     "boris_pipeline": lambda: boris_plan(args),
     "boris_create": lambda: gen_nine_grid_hooks(args),
     "boris_subagent": lambda: boris_parallel(args),
@@ -1511,7 +1809,7 @@ def dispatch(cmd: str, args: list = []) -> str:
 
     # 數據收集
     "collect_data": lambda: collect_data(args),
-    "collect_rss": lambda: collect_rss(),
+    "collect_rss": lambda: _collect_rss(),
     "collect_autocomplete": lambda: _collect_autocomplete(),
 
     # AI工廠
@@ -1548,23 +1846,23 @@ def dispatch(cmd: str, args: list = []) -> str:
     "affiliate_dashboard": lambda: affiliate_dashboard(args),
 
     # Railway 啟動入口
-    "start": lambda: run_schedule(),
-    "schedule": lambda: run_schedule(),
-}
+    "start": lambda: run_scheduled(),
+    "schedule": lambda: run_scheduled(),
+    }
 
-fn = routes.get(cmd)
+    fn = routes.get(cmd)
 
-if fn:
-    try:
-        return fn()
-    except Exception as e:
-        error_msg = f"❌ 指令 {cmd} 執行失敗：{e}"
-        logger.error(error_msg)
-        boris_record_error(cmd, str(e))
-        return error_msg
-else:
-    available = "\n".join(sorted(routes.keys()))
-    return f"未知指令：{cmd}\n\n可用指令：\n{available}"
+    if fn:
+        try:
+            return fn()
+        except Exception as e:
+            error_msg = f"❌ 指令 {cmd} 執行失敗：{e}"
+            logger.error(error_msg)
+            boris_record_error([cmd, str(e)])
+            return error_msg
+    else:
+        available = "\n".join(sorted(routes.keys()))
+        return f"未知指令：{cmd}\n\n可用指令：\n{available}"
 # ─────────────────────────────────────────
 # ── 模組十三：全自動聯盟發文引擎（v18.21）
 # ─────────────────────────────────────────
@@ -1623,16 +1921,25 @@ def _pick_affiliate_link(topic: str) -> tuple:
 
 def auto_affiliate_post(args: list = []) -> str:
     """
-    全自動聯盟發文引擎
-    流程：抓市場熱點 → 匹配連結 → AI生成文案 → 發布 Threads + TG
+    全自動變現發文引擎（v18.27 修正：自有產品優先 + 回饋鏈接通）
+    流程：抓熱點 → 優先推自有電子書(利潤100%)，否則聯盟連結 → AI文案 → 發布 → 記錄回饋
     """
     # Step 1: 抓今日熱點關鍵字
     autocomplete = _collect_autocomplete()
     lines = [l for l in autocomplete.split("\n") if l.strip() and not l.startswith("🔍")]
     today_topic = lines[0] if lines else "AI副業自動化"
 
-    # Step 2: 匹配最相關聯盟連結
-    product_name, aff_link, commission_type = _pick_affiliate_link(today_topic)
+    # Step 2: 變現標的決策 —— 自有電子書優先（利潤 100%，不靠別人審核）
+    gumroad_url = E("GUMROAD_PRODUCT_URL")
+    if gumroad_url:
+        product_name = E("GUMROAD_PRODUCT_NAME", "暗面筆記 AI副業電子書")
+        aff_link = gumroad_url
+        commission_type = "自有產品100%"
+        product_kind = "ebook"
+    else:
+        # 尚未上架電子書 → fallback 聯盟連結
+        product_name, aff_link, commission_type = _pick_affiliate_link(today_topic)
+        product_kind = "affiliate"
 
     # Step 3: AI 生成文案（九宮格鉤子風格）
     prompt = f"""
@@ -1689,8 +1996,15 @@ def auto_affiliate_post(args: list = []) -> str:
     conn.commit()
     conn.close()
 
-    result = f"""✅ <b>聯盟發文完成</b>
+    # Step 7（v18.27 補）：接通回饋鏈 —— 寫入 platform_posts，之後才追得回成效
+    if threads_result:
+        record_platform_post("threads", str(threads_result), today_topic, full_post, aff_link)
+    record_platform_post("telegram", f"tg_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+                         today_topic, full_post, aff_link)
 
+    result = f"""✅ <b>變現發文完成</b>
+
+標的：{'📕自有電子書' if product_kind=='ebook' else '🔗聯盟'}
 話題：{today_topic}
 產品：{product_name}（{commission_type}）
 TG：{'✅' if tg_result else '❌'}
@@ -1699,7 +2013,7 @@ Threads：{'✅' if threads_result else '❌（需確認 META_ACCESS_TOKEN）'}
 內容預覽：
 {post_text[:200]}"""
 
-    logger.info(f"聯盟發文：{product_name} | {commission_type}")
+    logger.info(f"變現發文：{product_name} | {commission_type}")
     return result
 
 
@@ -1820,17 +2134,38 @@ def gumroad_ebook_outline(args: list = []) -> str:
     result = _ai(prompt, task_type="creative")
     if not result:
         return "❌ AI 生成失敗，請稍後重試"
-    
+
+    # v18.27：企劃落庫，避免重複消耗 AI 額度，之後可隨時調閱
+    try:
+        conn = sqlite3.connect(BORIS_DB)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ebook_plans (
+                id INTEGER PRIMARY KEY,
+                topic TEXT,
+                plan TEXT,
+                created_at TEXT
+            )
+        """)
+        conn.execute("INSERT INTO ebook_plans (topic, plan, created_at) VALUES (?,?,?)",
+                     (topic, result, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"ebook 企劃落庫失敗: {e}")
+
     output = f"""📚 <b>電子書企劃：{topic}</b>
 
 {result}
 
 ━━━━━━━━━━━━━━━━
-📌 下一步：
-1. 把以上內容複製到 Google Docs 寫成 PDF
-2. 上傳至 rogue03.gumroad.com
-3. 把 Gumroad 連結加入 Railway GUMROAD_PRODUCT_URL
-4. 執行 python main.py auto_post 開始推廣
+📌 變現上線 4 步（做完即可收錢）：
+1. 把上面內容做成 PDF（Google Docs → 下載 PDF，或用 Canva）
+2. 上架 rogue03.gumroad.com，設定售價
+3. 到 Railway Variables 新增兩個變數：
+   GUMROAD_PRODUCT_URL = 你的商品連結
+   GUMROAD_PRODUCT_NAME = 電子書標題
+4. 完成後系統自動發文就會「優先推這本電子書」（利潤100%），
+   TG 打 auto_post 可立即推一篇測試
 """
     return output
 
@@ -1867,7 +2202,7 @@ if __name__ == "__main__":
     init_all_db()
 
     if len(sys.argv) < 2:
-        print("暗面筆記 v18.20")
+        print("暗面筆記 v18.27")
         print("用法：python main.py [指令] [參數...]")
         print("執行 python main.py health_check 查看系統狀態")
         sys.exit(0)
