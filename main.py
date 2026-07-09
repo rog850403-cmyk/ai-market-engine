@@ -920,12 +920,48 @@ def _post_to_threads(text: str) -> bool:
         return False
 
 def _post_to_instagram(text: str) -> bool:
-    """發布到 Instagram（同 Meta API）"""
-    return _post_to_threads(text)
+    """IG Graph API 不支援純文字貼文,一定要帶圖片(image_url)才能發布,
+    目前沒有接圖片生成/托管服務,所以不再假裝『用Threads的API發了就算IG發了』——
+    這裡明確回傳False,並記錄警告。上層(pain_intelligence.publish_approved_content)
+    會在IG失敗時把完整文案送進Telegram,讓你手動貼上IG發布,而不是自動跳過。"""
+    logger.warning("IG純文字發布目前不支援(缺圖片),此則需人工發布，文案已由審核流程送出")
+    return False
 
 def _post_to_facebook(text: str) -> bool:
     """發布到 Facebook（同 Meta API）"""
     return _post_to_threads(text)
+
+# ─────────────────────────────────────────
+# Pain Intelligence 模組整合（痛點驅動內容系統，取代market_intelligence_cycle的自動換題邏輯）
+# ─────────────────────────────────────────
+import pain_intelligence as _pain
+# pain_intelligence.py 內部直接呼叫 tg()/logger/wiki_get()/... 等裸名稱，
+# 這些名稱是在「pain_intelligence自己的模組全域命名空間」裡查找的，
+# 不會因為main.py這裡import了它就自動看到main.py的全域變數。
+# 所以要把main.py已經定義好的這些函式/變數，直接注入進pain_intelligence模組物件，
+# 這樣pain_intelligence.py裡的裸名稱呼叫才不會丟NameError。
+_pain.tg = tg
+_pain.wiki_get = wiki_get
+_pain.wiki_set = wiki_set
+_pain.wiki_log = wiki_log
+_pain.logger = logger
+_pain.TG_TOKEN = TG_TOKEN
+_pain._ai = _ai
+_pain._post_to_threads = _post_to_threads
+_pain._post_to_instagram = _post_to_instagram
+
+from pain_intelligence import (
+    collect_pain_signals,
+    synthesize_pain_points,
+    generate_content_from_pain,
+    generate_daily_content,
+    check_tg_approvals,
+    publish_approved_content,
+    weekly_pain_report,
+    ACTIVE_TOPICS,
+    LISTENING_TOPICS,
+    CURRENT_LOCKED_TOPIC,
+)
 
 # ─────────────────────────────────────────
 # 排程執行
@@ -984,13 +1020,29 @@ def run_scheduled():
 
             # 整點執行
             if utc_min == 0:
+                # 原本的market_intelligence_cycle會每次自動換主題,
+                # 這是過去方向一直跑掉的技術根源之一，先保留函式但不再排程呼叫。
+                # 改用pain_intelligence：主題鎖定在CURRENT_LOCKED_TOPIC(目前=鍍膜美容)，
+                # 其餘4條線只收集訊號進資料庫，不生成內容、不發布。
                 if utc_hour in [0, 6, 12, 18]:
-                    market_intelligence_cycle([])
-                    auto_affiliate_post([])
+                    collect_pain_signals([])          # 收集真實PTT訊號(所有主題)
+
+                if utc_hour == 1:
+                    synthesize_pain_points([])        # 每天一次，聚合成痛點清單
+                    generate_daily_content([])        # 對鎖定主題產出當日草稿(含防呆)
+
+                if utc_hour in [7, 12, 18, 22]:
+                    publish_approved_content([])      # 只發布status=approved的內容
+
+                if utc_hour == 23:
+                    weekly_pain_report([])            # 先每天發，穩定後可改成每週一次(判斷週幾再擋)
 
                 time.sleep(61)
             else:
                 time.sleep(30)
+
+            # 人工審核輪詢：不管整點與否，每次迴圈都檢查Telegram的approve/reject回覆
+            check_tg_approvals([])
 
         except KeyboardInterrupt:
             logger.info("排程停止")
@@ -1018,7 +1070,15 @@ def dispatch(cmd: str, args: list = []) -> str:
         
         # Wiki
         "wiki_dashboard": lambda: wiki_dashboard(args),
-        
+
+        # Pain Intelligence（痛點驅動內容系統，鎖定主題：鍍膜美容）
+        "collect_pain": lambda: str(collect_pain_signals(args)),
+        "synthesize_pain": lambda: str(synthesize_pain_points(args)),
+        "generate_daily": lambda: str(generate_daily_content(args)),
+        "check_approvals": lambda: check_tg_approvals(args),
+        "publish_queue": lambda: publish_approved_content(args),
+        "pain_report": lambda: weekly_pain_report(args),
+
         # 健康檢查
         "health_check": lambda: "✅ v19.0 系統就緒",
         
