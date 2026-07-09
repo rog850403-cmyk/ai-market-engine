@@ -38,31 +38,31 @@ ACTIONABLE_TOPICS = {
     "鍍膜美容": {
         "keywords": ["鍍膜", "汽車美容", "洗車", "車體保養", "被坑"],
         "cta": "保值",
-        "ptt_boards": ["car", "Vehicle"],
+        "ptt_boards": ["car", "CarShop"],   # 原本的"Vehicle"板不存在(已實測404)，car是唯一確認存在的汽車板；CarShop是買賣交易板
         "status": "active",   # 唯一會生成內容+發布的主題
     },
     "汽車銷售": {
         "keywords": ["中古車", "調表", "買車被騙", "車商", "車貸"],
         "cta": "保值",
-        "ptt_boards": ["car", "Vehicle"],
+        "ptt_boards": ["car", "CarShop"],   # 同上,原本的"Vehicle"不存在
         "status": "listening",  # 只收集訊號,不生成內容,不發布
     },
     "都更": {
         "keywords": ["都更", "都市更新", "危老重建", "地主"],
         "cta": None,
-        "ptt_boards": ["home-sale", "Building"],
+        "ptt_boards": ["home-sale"],   # 原本的"Building"板不存在(已實測404)，home-sale是PTT真實的房屋買賣板,都更/危老討論都在這裡
         "status": "listening",
     },
     "融資代辦": {
         "keywords": ["貸款", "融資", "代辦", "信用瑕疵", "銀行拒貸"],
         "cta": None,
-        "ptt_boards": ["MobileComm", "Stock"],  # 先用通用板,之後你確認更準的板名再換
+        "ptt_boards": ["Loan", "Bank_Service"],   # 原本"MobileComm"/"Stock"只是隨便先湊的通用板,已改成真實的銀行貸款專板Loan、銀行服務板Bank_Service
         "status": "listening",
     },
     "工程外包": {
         "keywords": ["水電", "泥作", "土木", "工班", "裝潢糾紛"],
         "cta": None,
-        "ptt_boards": ["home-sale"],
+        "ptt_boards": ["Interior", "FixMyHouse", "home-sale"],   # 原本"home-sale"單獨列,現在補上室內設計板Interior、居家修繕板FixMyHouse,涵蓋率更高
         "status": "listening",
     },
 }
