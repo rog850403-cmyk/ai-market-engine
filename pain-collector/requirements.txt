@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+psycopg2-binary
+requests
+python-multipart
+beautifulsoup4
+lxml
+pytesseract
+Pillow
+yt-dlp
+faster-whisper

@@ -1,0 +1,7 @@
+# 讓 Railway 用 Nixpacks 建置時，額外安裝：
+# - OCR：圖片文字辨識所需
+# - ffmpeg：影片下載後抽取音訊所需（新增，支援影片語音轉文字）
+# 這個檔案不用改，Railway偵測到會自動套用
+
+[phases.setup]
+aptPkgs = ["tesseract-ocr", "tesseract-ocr-chi-tra", "tesseract-ocr-chi-sim", "ffmpeg"]
