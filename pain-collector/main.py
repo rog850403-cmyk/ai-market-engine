@@ -131,17 +131,42 @@ def _preload_whisper_models():
         pass  # 預熱失敗不影響系統啟動，第一支影片時再現場載入
 
 
+STARTUP_ERROR = None
+
+
 @app.on_event("startup")
 def startup():
-    init_db()
-    ensure_video_columns()
-    seed_if_empty()
-    reload_cache()
+    global STARTUP_ERROR
+    import traceback
+    try:
+        init_db()
+        print("[startup] init_db 完成", flush=True)
+        ensure_video_columns()
+        print("[startup] ensure_video_columns 完成", flush=True)
+        seed_if_empty()
+        print("[startup] seed_if_empty 完成", flush=True)
+        reload_cache()
+        print("[startup] reload_cache 完成", flush=True)
+        print("[startup] 全部完成，服務就緒", flush=True)
+    except Exception as e:
+        STARTUP_ERROR = traceback.format_exc()
+        print("=" * 40, flush=True)
+        print("[startup] 失敗，完整錯誤如下：", flush=True)
+        print(STARTUP_ERROR, flush=True)
+        print("=" * 40, flush=True)
     # 暫時關閉開機預熱whisper模型：這個動作會在開機當下立刻下載模型檔+載入記憶體，
     # 如果服務記憶體配額較小，容易在啟動瞬間被系統砍掉（無錯誤訊息、log直接中斷）。
     # 改成第一支影片進來時才臨時載入，啟動更輕量，先確保能成功開機。
     # 確認能穩定開機後，可以取消下面這行的註解，恢復預熱功能：
     # threading.Thread(target=_preload_whisper_models, daemon=True).start()
+
+
+@app.get("/health")
+async def health():
+    """診斷用：開機時如果有任何錯誤，直接在這裡看得到，不用翻Log"""
+    if STARTUP_ERROR:
+        return JSONResponse({"status": "startup_failed", "error": STARTUP_ERROR}, status_code=500)
+    return JSONResponse({"status": "ok"})
 
 
 def _check_duplicate(cur, content: str, category: str):
