@@ -137,7 +137,11 @@ def startup():
     ensure_video_columns()
     seed_if_empty()
     reload_cache()
-    threading.Thread(target=_preload_whisper_models, daemon=True).start()
+    # 暫時關閉開機預熱whisper模型：這個動作會在開機當下立刻下載模型檔+載入記憶體，
+    # 如果服務記憶體配額較小，容易在啟動瞬間被系統砍掉（無錯誤訊息、log直接中斷）。
+    # 改成第一支影片進來時才臨時載入，啟動更輕量，先確保能成功開機。
+    # 確認能穩定開機後，可以取消下面這行的註解，恢復預熱功能：
+    # threading.Thread(target=_preload_whisper_models, daemon=True).start()
 
 
 def _check_duplicate(cur, content: str, category: str):
