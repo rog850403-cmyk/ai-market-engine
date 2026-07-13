@@ -37,7 +37,7 @@ _CACHE = {"category_keywords": {}, "emotion_keywords": [], "intent_signals": []}
 def get_conn():
     if not DATABASE_URL:
         raise RuntimeError("環境變數 DATABASE_URL 未設定，請在 Railway 綁定 PostgreSQL 服務")
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=10)
 
 
 def init_db():
@@ -139,6 +139,7 @@ def startup():
     global STARTUP_ERROR
     import traceback
     try:
+        print("[startup] 開始 init_db（連線資料庫+建表，最多等10秒）...", flush=True)
         init_db()
         print("[startup] init_db 完成", flush=True)
         ensure_video_columns()
